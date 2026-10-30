@@ -1,6 +1,43 @@
 {
-  "name":"@conceptbridge/api","version":"0.1.0","private":true,"type":"module",
-  "scripts":{"dev":"tsx watch src/server.ts","build":"tsc -p tsconfig.json","start":"tsx src/server.ts","test":"vitest run","typecheck":"tsc --noEmit -p tsconfig.json","seed":"tsx src/seed.ts","seed:admin":"tsx src/seed-admin.ts","migrate:demo-names":"tsx src/migrate-demo-student-names.ts"},
-  "dependencies":{"@conceptbridge/engine":"*","@conceptbridge/shared":"*","argon2":"^0.41.1","connect-mongo":"^5.1.0","cookie-parser":"^1.4.7","cors":"^2.8.5","csurf":"^1.11.0","dotenv":"^16.4.7","express":"^4.21.2","express-rate-limit":"^7.5.0","express-session":"^1.18.1","helmet":"^8.0.0","mongoose":"^8.9.5","tsx":"^4.19.2","zod":"^3.24.1"},
-  "devDependencies":{"@types/connect-mongo":"^3.1.5","@types/cookie-parser":"^1.4.8","@types/cors":"^2.8.17","@types/csurf":"^1.11.5","@types/express":"^5.0.0","@types/express-session":"^1.18.1","typescript":"^5.7.3","vitest":"^2.1.8"}
+  "name": "@conceptbridge/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "seed": "tsx src/seed.ts",
+    "seed:admin": "tsx src/seed-admin.ts",
+    "migrate:demo-names": "tsx src/migrate-demo-student-names.ts"
+  },
+  "dependencies": {
+    "@conceptbridge/engine": "*",
+    "@conceptbridge/shared": "*",
+    "argon2": "^0.41.1",
+    "connect-mongo": "^5.1.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csurf": "^1.11.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "express-session": "^1.18.1",
+    "helmet": "^8.0.0",
+    "mongoose": "^8.9.5",
+    "tsx": "^4.19.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/connect-mongo": "^3.1.5",
+    "@types/cookie-parser": "^1.4.8",
+    "@types/cors": "^2.8.17",
+    "@types/csurf": "^1.11.5",
+    "@types/express": "^5.0.6",
+    "@types/express-session": "^1.18.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
 }
