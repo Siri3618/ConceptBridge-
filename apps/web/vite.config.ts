@@ -1,0 +1,6 @@
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
+export default defineConfig({ plugins: [react(), VitePWA({ registerType: 'autoUpdate', includeAssets: ['icon.svg'], manifest: { name: 'ConceptBridge', short_name: 'ConceptBridge', description: 'Adaptive maths learning for Indian classrooms', theme_color: '#f8f7f2', background_color: '#f8f7f2', display: 'standalone', start_url: '/', scope: '/', icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }] }, workbox: { cleanupOutdatedCaches: true, navigateFallback: '/index.html', globPatterns: ['**/index-*.js', '**/workbox-window*.js', '**/*.css', '**/*.html', '**/*.svg', '**/*.woff', '**/*.woff2'], runtimeCaching: [{ urlPattern: ({ request }) => request.destination === 'script' || request.destination === 'style' || request.destination === 'font', handler: 'StaleWhileRevalidate', options: { cacheName: 'conceptbridge-static', expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 * 30 } } }] } })], server: { proxy: { '/api': { target: 'http://localhost:4000', changeOrigin: true } } }, test: { environment: 'jsdom', setupFiles: './src/test-setup.ts' } });
+
+

@@ -1,0 +1,26 @@
+/** One place for adaptive thresholds; values are fractions unless otherwise stated. */
+export const ENGINE_CONFIG = {
+  mastery: {
+    learningRate: 0.22,
+    confidenceGain: 0.14,
+    weakPrerequisite: 0.6,
+    learnBelow: 0.4,
+    solveBelow: 0.76,
+    challengeAt: 0.92,
+    masteryConfirmedAt: 0.8,
+    hintPenaltyPerHint: 0.18,
+    minimumHintMultiplier: 0.46,
+    fastResponseRatio: 0.25,
+    slowResponseRatio: 2.5,
+    fastResponseMultiplier: 0.8,
+    slowResponseMultiplier: 0.85,
+    guessCorrectTarget: 0.68,
+    unsureCorrectTarget: 0.88,
+    decayHalfLifeDays: 90,
+  },
+  diagnostic: { maxQuestions: 12, minimumQuestions: 8, inferredConfidence: 0.25 },
+  test: { minimumQuestions: 3, maximumQuestions: 8, passProbability: 0.8, failProbability: 0.5, falsePassRate: 0.05, falseFailRate: 0.1 },
+  revision: { firstDays: 3, secondDays: 7, masteryThreshold: 0.8, forgottenDrop: 0.15 },
+  streak: { timezone: 'Asia/Kolkata', maxFreezes: 2 },
+  grouping: { readyAt: 0.8, basicsBelow: 0.45, maximumWeakConceptsForReady: 0 },
+} as const;
