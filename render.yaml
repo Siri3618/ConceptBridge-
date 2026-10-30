@@ -2,7 +2,7 @@ services:
   - type: web
     name: conceptbridge-api
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm ci && npm run build -w @conceptbridge/api
     startCommand: npm run start -w @conceptbridge/api
     healthCheckPath: /api/health
