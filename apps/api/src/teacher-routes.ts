@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { decideNextActivity, decayMastery, findRootCause, groupByMastery, updateMastery, type KnowledgeGraph } from '@conceptbridge/engine';
 import { Alert, Attempt, Classroom, Concept, DecisionLog, MasteryState, PrerequisiteEdge, Question, StreakState, TeacherGroupPlan, TeacherOverride, User, Worksheet } from './models.js';
 import { syncProgressSignals } from './progress-signals.js';
+import { getCurriculumSnapshot } from './curriculum-cache.js';
+import { resolveTeacherStudentClassLevel } from './teacher-class-level.js';
 
 const router = Router();
 const fail = (res: Response, status: number, code: string, message: string) => res.status(status).json({ error: { code, message } });
@@ -14,10 +16,10 @@ async function ownedClass(req: Request, classId: string) {
   return Classroom.findOne({ _id: classId, ...(teacherId ? { teacherId } : {}) });
 }
 async function graphForClass() {
-  const [concepts, edges] = await Promise.all([Concept.find().sort({ classLevel: 1 }).lean(), PrerequisiteEdge.find().lean()]);
+  const { concepts, edges } = await getCurriculumSnapshot();
   const slugById = new Map(concepts.map((item) => [String(item._id), item.slug]));
   const graph: KnowledgeGraph = { nodes: concepts.map((item) => item.slug), edges: edges.map((edge) => ({ prerequisite: slugById.get(String(edge.prerequisiteId))!, dependent: slugById.get(String(edge.dependentId))! })).filter((edge) => edge.prerequisite && edge.dependent) };
-  return { concepts, graph };
+  return { concepts, edges, graph };
 }
 function planTemplate(group: string) {
   if (group === 'ready-to-advance') return '10-minute mixed challenge: students solve two unfamiliar problems and explain their strategy to a partner.';
@@ -31,14 +33,17 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
   const requestedId = typeof req.query.classId === 'string' ? req.query.classId : undefined;
   const classroom = requestedId ? classes.find((item) => String(item._id) === requestedId) : classes[0];
   if (!classroom) return fail(res, 404, 'CLASS_NOT_FOUND', 'That class is not assigned to your account.');
-  const [students, concepts, edges, allStates, plans, alerts] = await Promise.all([
-    User.find({ classId: classroom._id, role: 'student', isActive: true }).sort({ rollNo: 1 }).lean(),
-    Concept.find({ classLevel: { $lte: classroom.classLevel } }).sort({ classLevel: 1 }).lean(),
-    PrerequisiteEdge.find().lean(),
-    MasteryState.find({ studentId: { $in: await User.find({ classId: classroom._id, role: 'student' }).distinct('_id') } }).populate('conceptId').lean(),
+  const studentsPromise = User.find({ classId: classroom._id, role: 'student', isActive: true }).sort({ rollNo: 1 }).lean().exec();
+  const [students, curriculum, allStates, plans, alerts] = await Promise.all([
+    studentsPromise,
+    graphForClass(),
+    studentsPromise.then((rows) => MasteryState.find({ studentId: { $in: rows.map((student) => student._id) } }).populate('conceptId').lean()),
     TeacherGroupPlan.find({ classId: classroom._id }).lean(),
     Alert.find({ classId: classroom._id, acknowledgedAt: { $exists: false } }).populate('studentId').sort({ createdAt: -1 }).lean(),
   ]);
+  const concepts = curriculum.concepts.filter((item) => item.classLevel <= classroom.classLevel);
+  const classConceptIds = new Set(concepts.map((item) => String(item._id)));
+  const edges = curriculum.edges.filter((edge) => classConceptIds.has(String(edge.prerequisiteId)) && classConceptIds.has(String(edge.dependentId)));
   const statesByStudent = new Map<string, Map<string, number>>();
   for (const row of allStates as any[]) {
     const studentKey = String(row.studentId);
@@ -100,9 +105,11 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
 router.get('/students/:studentId', asyncRoute(async (req, res) => {
   const student = await User.findOne({ _id: req.params.studentId, role: 'student' }).lean();
   if (!student) return fail(res, 404, 'STUDENT_NOT_FOUND', 'That student could not be found.');
-  if (!await ownedClass(req, String(student.classId))) return fail(res, 403, 'FORBIDDEN', 'This student is not in one of your classes.');
+  const classroom = await ownedClass(req, String(student.classId));
+  if (!classroom) return fail(res, 403, 'FORBIDDEN', 'This student is not in one of your classes.');
+  const classLevel = resolveTeacherStudentClassLevel(student.classLevel, classroom.classLevel);
   const [concepts, states, attempts, decisions, streak, graphData] = await Promise.all([
-    Concept.find({ classLevel: { $lte: student.classLevel ?? 6 } }).sort({ classLevel: 1 }).lean(),
+    Concept.find({ classLevel: { $lte: classLevel } }).sort({ classLevel: 1 }).lean(),
     MasteryState.find({ studentId: student._id }).populate('conceptId').lean(),
     Attempt.find({ studentId: student._id }).populate({ path: 'questionId', populate: { path: 'conceptId' } }).populate('misconceptionId').sort({ createdAt: -1 }).limit(30).lean(),
     DecisionLog.find({ studentId: student._id }).sort({ createdAt: -1 }).limit(30).lean(),
@@ -114,7 +121,7 @@ router.get('/students/:studentId', asyncRoute(async (req, res) => {
   const latestFailed = (attempts as any[]).find((item) => !item.correct && item.questionId?.conceptId?.slug);
   const rewind = latestFailed ? findRootCause(latestFailed.questionId.conceptId.slug, masteryMap, graphData.graph) : null;
   return res.json({
-    student: { id: String(student._id), name: student.name, rollNo: student.rollNo, classLevel: student.classLevel, language: student.language, lastActiveAt: student.lastActiveAt ?? null },
+    student: { id: String(student._id), name: student.name, rollNo: student.rollNo, classLevel, language: student.language, lastActiveAt: student.lastActiveAt ?? null },
     concepts: concepts.map((concept) => { const state = stateBySlug.get(concept.slug); return { id: String(concept._id), slug: concept.slug, name: concept.name, nameTe: concept.nameTe, classLevel: concept.classLevel, mastery: state?.mastery ?? null, baselineMastery: state?.baselineMastery ?? null, confidence: state?.confidence ?? 0, nextRevisionAt: state?.nextRevisionAt ?? null }; }),
     rewind: rewind ? { ...rewind, names: rewind.path.map((slug) => concepts.find((item) => item.slug === slug)?.name ?? slug) } : null,
     misconceptions: (attempts as any[]).filter((item) => item.misconceptionId).map((item) => ({ text: item.misconceptionId.text, concept: item.questionId?.conceptId?.name, date: item.createdAt })),

@@ -56,6 +56,7 @@ describe('sign-in and role journeys', () => {
 
     expect(await screen.findByRole('heading', { name: 'Class 10 Demo' })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/teacher', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/me'))).toBe(false);
     expect(screen.getByText('CLASS HEATMAP')).toBeInTheDocument();
   });
 

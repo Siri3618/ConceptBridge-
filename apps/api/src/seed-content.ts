@@ -1,8 +1,8 @@
 import { curriculum } from '@conceptbridge/engine';
 import { Concept, Explanation, Misconception, Question } from './models.js';
 
-interface Draft { text: string; answer: string; wrong: [string, string]; hints: [string, string, string]; }
-function teluguDraft(slug: string, n: number): Draft {
+export interface Draft { text: string; answer: string; wrong: [string, string]; hints: [string, string, string]; }
+export function teluguDraft(slug: string, n: number): Draft {
   const x = n + 1;
   const drafts: Record<string, Draft> = {
     'whole-numbers-place-value': { text: `${4_000 + x * 100 + 30} లో ${x % 2 ? '3' : '4'} అంకె విలువ ఎంత?`, answer: x % 2 ? '30' : '4000', wrong: [x % 2 ? '3' : '4', x % 2 ? '300' : '400'], hints: ['సంఖ్యలో ఆ అంకె ఏ స్థానంలో ఉందో చూడండి.', 'కుడి వైపు నుంచి ఒకట్లు, పదులు, వందలు, వేల స్థానాలు లెక్కించండి.', 'అంకె విలువ = అంకె ముఖ విలువ × స్థాన విలువ.'] },
@@ -23,7 +23,7 @@ function teluguDraft(slug: string, n: number): Draft {
   };
   return drafts[slug]!;
 }
-function draft(slug: string, n: number): Draft {
+export function draft(slug: string, n: number): Draft {
   const x = n + 1;
   switch (slug) {
     case 'whole-numbers-place-value': return { text: `In ${4_000 + x * 100 + 30}, what is the value of the digit ${x % 2 ? '3' : '4'}?`, answer: x % 2 ? '30' : '4000', wrong: [x % 2 ? '3' : '4', x % 2 ? '300' : '400'], hints: ['Look at the digit’s position in the number.', 'Count places from the right: ones, tens, hundreds, thousands.', 'A digit’s value is its face value multiplied by its place value.'] };
@@ -44,6 +44,23 @@ function draft(slug: string, n: number): Draft {
   }
 }
 
+export function buildQuestionDrafts(slug: string) {
+  return Array.from({ length: 6 }, (_, index) => ({ index, difficulty: (index % 5) + 1, english: draft(slug, index), telugu: teluguDraft(slug, index) }));
+}
+
+export function buildMisconceptionText(slug: string, index: number) {
+  return {
+    en: slug === 'integers-sign-rules' && index === 0 ? 'A negative multiplied by a negative is positive. The sign should be +, not −.' : slug === 'fractions' && index === 0 ? 'When adding fractions with the same denominator, add the numerators and keep the denominator.' : index === 0 ? 'Check which operation should happen first.' : 'Check the sign, place value, or unit in this step.',
+    te: slug === 'integers-sign-rules' && index === 0 ? 'ఋణ సంఖ్యను మరో ఋణ సంఖ్యతో గుణిస్తే ధన సంఖ్య వస్తుంది. సంకేతం + కావాలి.' : 'ఈ దశలో సంకేతం, స్థాన విలువ లేదా క్రియను మళ్లీ పరిశీలించండి.',
+  };
+}
+
+export function buildExplanationText(conceptName: string, english: Draft, telugu: Draft, variant: 'step-by-step' | 'real-life') {
+  return variant === 'step-by-step'
+    ? { en: `${conceptName}: ${english.hints[0]} ${english.hints[1]} ${english.hints[2]}`, te: `${telugu.hints[0]} ${telugu.hints[1]} ${telugu.hints[2]}` }
+    : { en: `A kirana shop, cricket score, or rupee amount can make ${conceptName.toLowerCase()} easier to picture. ${english.hints[1]} Try the check question when you are ready.`, te: `కిరాణా దుకాణం, క్రికెట్ స్కోరు లేదా రూపాయల ఉదాహరణతో ఈ భావనను ఊహించండి. ${telugu.hints[1]} సిద్ధమైనప్పుడు చిన్న ప్రశ్నను ప్రయత్నించండి.` };
+}
+
 export async function seedLearningContent(): Promise<void> {
   const bySlug = new Map((await Concept.find().select('_id slug').lean()).map((item) => [item.slug, item._id]));
   for (const concept of curriculum) {
@@ -51,8 +68,7 @@ export async function seedLearningContent(): Promise<void> {
     if (!conceptId) throw new Error(`Seed the concept graph before content: ${concept.slug}`);
     const misconceptionIds = [`${concept.slug}-error-a`, `${concept.slug}-error-b`];
     const misconceptionDocs = await Promise.all(misconceptionIds.map((slug, i) => Misconception.findOneAndUpdate({ slug }, {
-      slug, conceptId,
-      text: { en: concept.slug === 'integers-sign-rules' && i === 0 ? 'A negative multiplied by a negative is positive. The sign should be +, not −.' : concept.slug === 'fractions' && i === 0 ? 'When adding fractions with the same denominator, add the numerators and keep the denominator.' : i === 0 ? 'Check which operation should happen first.' : 'Check the sign, place value, or unit in this step.', te: concept.slug === 'integers-sign-rules' && i === 0 ? 'ఋణ సంఖ్యను మరో ఋణ సంఖ్యతో గుణిస్తే ధన సంఖ్య వస్తుంది. సంకేతం + కావాలి.' : 'ఈ దశలో సంకేతం, స్థాన విలువ లేదా క్రియను మళ్లీ పరిశీలించండి.' },
+      slug, conceptId, text: buildMisconceptionText(concept.slug, i),
     }, { upsert: true, new: true })));
     for (let i = 0; i < 6; i++) {
       const item = draft(concept.slug, i);
@@ -68,8 +84,8 @@ export async function seedLearningContent(): Promise<void> {
         hints: item.hints.map((hint, index) => ({ en: hint, te: teItem.hints[index]! })),
       }, { upsert: true, new: true });
       if (i === 0) {
-        await Explanation.findOneAndUpdate({ conceptId, variant: 'step-by-step' }, { conceptId, variant: 'step-by-step', text: { en: `${concept.name}: ${item.hints[0]} ${item.hints[1]} ${item.hints[2]}`, te: `${teItem.hints[0]} ${teItem.hints[1]} ${teItem.hints[2]}` }, checkQuestionId: question._id }, { upsert: true, new: true });
-        await Explanation.findOneAndUpdate({ conceptId, variant: 'real-life' }, { conceptId, variant: 'real-life', text: { en: `A kirana shop, cricket score, or rupee amount can make ${concept.name.toLowerCase()} easier to picture. ${item.hints[1]} Try the check question when you are ready.`, te: `కిరాణా దుకాణం, క్రికెట్ స్కోరు లేదా రూపాయల ఉదాహరణతో ఈ భావనను ఊహించండి. ${teItem.hints[1]} సిద్ధమైనప్పుడు చిన్న ప్రశ్నను ప్రయత్నించండి.` }, checkQuestionId: question._id }, { upsert: true, new: true });
+        await Explanation.findOneAndUpdate({ conceptId, variant: 'step-by-step' }, { conceptId, variant: 'step-by-step', text: buildExplanationText(concept.name, item, teItem, 'step-by-step'), checkQuestionId: question._id }, { upsert: true, new: true });
+        await Explanation.findOneAndUpdate({ conceptId, variant: 'real-life' }, { conceptId, variant: 'real-life', text: buildExplanationText(concept.name, item, teItem, 'real-life'), checkQuestionId: question._id }, { upsert: true, new: true });
       }
     }
   }

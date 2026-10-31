@@ -8,7 +8,8 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "seed": "npm run seed -w @conceptbridge/api"
+    "seed": "npm run seed -w @conceptbridge/api",
+    "seed:curriculum:production": "npm run seed:curriculum:production -w @conceptbridge/api --"
   },
   "devDependencies": { "concurrently": "^9.1.2", "typescript": "^5.7.3", "vitest": "^2.1.8" },
   "engines": { "node": ">=20.0.0", "npm": ">=10.0.0" }

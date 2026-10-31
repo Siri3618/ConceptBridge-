@@ -2,9 +2,10 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod';
 import { diagnosticCompleteSchema, studentAnswerSchema } from '@conceptbridge/shared';
 import { decideNextActivity, decayMastery, earnStreakFreeze, evaluateAdaptiveTest, findRootCause, getPrerequisites, groupByMastery, recordStreakActivity, scheduleRevisions, updateMastery, type Activity, type KnowledgeGraph } from '@conceptbridge/engine';
-import { Alert, Attempt, Concept, DecisionLog, Explanation, MasteryState, Misconception, PrerequisiteEdge, Question, StreakState, TeacherOverride, User } from './models.js';
+import { Alert, Attempt, Concept, DecisionLog, Explanation, MasteryState, Misconception, Question, StreakState, TeacherOverride, User } from './models.js';
 import { syncProgressSignals } from './progress-signals.js';
-import { chooseQuestion } from './question-selection.js';
+import { chooseQuestion, targetQuestionDifficulty } from './question-selection.js';
+import { getCurriculumSnapshot } from './curriculum-cache.js';
 
 const router = Router();
 const fail = (res: Response, status: number, code: string, message: string) => res.status(status).json({ error: { code, message } });
@@ -12,7 +13,7 @@ const asyncRoute = (fn: (req: Request, res: Response, next: NextFunction) => Pro
 router.use((req, res, next) => req.session.user?.role === 'student' ? next() : fail(res, req.session.user ? 403 : 401, req.session.user ? 'FORBIDDEN' : 'UNAUTHENTICATED', req.session.user ? 'Student access only.' : 'Please sign in.'));
 
 async function getGraph(): Promise<{ graph: KnowledgeGraph; concepts: Array<Record<string, unknown>>; masteryBySlug: Map<string, number> }> {
-  const [concepts, edges] = await Promise.all([Concept.find().sort({ classLevel: 1 }).lean(), PrerequisiteEdge.find().lean()]);
+  const { concepts, edges } = await getCurriculumSnapshot();
   const slugById = new Map(concepts.map((concept) => [String(concept._id), concept.slug]));
   const graphEdges = edges.map((edge) => ({ prerequisite: slugById.get(String(edge.prerequisiteId))!, dependent: slugById.get(String(edge.dependentId))! })).filter((edge) => edge.prerequisite && edge.dependent);
   return { graph: { nodes: concepts.map((concept) => concept.slug), edges: graphEdges }, concepts, masteryBySlug: new Map() };
@@ -85,7 +86,6 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
     ...(rewind && rewind.rootCauseId !== latestFailedSlug ? { rewindTargetId: rewind.rootCauseId } : {}),
     ...(relevantOverride && forcedActivity && relevantOverride.action !== 'skip' ? { teacherOverride: { activity: forcedActivity, conceptId: recommendationConcept, locked: relevantOverride.action === 'lock' } } : {}),
   });
-  await DecisionLog.create({ studentId, conceptId: (graphData.concepts as any[]).find((item) => item.slug === decision.conceptId)?._id, activity: decision.activity, ruleId: decision.ruleId, reason: decision.reason, inputs: decision.inputs });
   const revisionCount = conceptItems.filter((item) => item.nextRevisionAt && new Date(item.nextRevisionAt).getTime() <= Date.now()).length;
   return res.json({
     student: { name: student?.name ?? req.session.user!.name, classLevel, board: req.session.user!.board },
@@ -105,7 +105,7 @@ router.get('/question', asyncRoute(async (req, res) => {
   if (!concept) return fail(res, 404, 'NOT_FOUND', 'We could not find that concept.');
   if (concept.classLevel > (req.session.user!.classLevel ?? 6)) return fail(res, 403, 'CLASS_LEVEL_MISMATCH', 'This concept is above your current class.');
   const mastery = await MasteryState.findOne({ studentId: req.session.user!.id, conceptId: concept._id }).lean();
-  const difficulty = query.data.mode === 'diagnostic' || query.data.mode === 'test' || query.data.mode === 'revise' ? 3 : Math.max(1, Math.min(5, Math.floor((mastery?.mastery ?? 0) * 5) + 1));
+  const difficulty = targetQuestionDifficulty(query.data.mode, mastery?.mastery ?? 0);
   const questions = await Question.find({ conceptId: concept._id }).sort({ difficulty: 1, _id: 1 }).lean();
   if (!questions.length) return fail(res, 404, 'CONTENT_MISSING', 'Questions for this concept are not available yet.');
   const seenInActivity = query.data.activityId

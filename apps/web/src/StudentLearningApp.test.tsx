@@ -16,8 +16,26 @@ describe('student learning dashboard', () => {
     render(<StudentLearningApp user={{ id: 's1', role: 'student', name: 'Asha', language: 'en', board: 'CBSE', classLevel: 10 }} csrf="csrf" onSignOut={() => undefined} language="en"/>);
     await waitFor(() => expect(screen.getAllByRole('heading', { name: 'Quadratic equations' }).length).toBeGreaterThan(0));
     expect(screen.getByText('TODAY’S PATH')).toBeInTheDocument();
+    expect(screen.getByText('Continue')).toBeInTheDocument();
+    expect(screen.getByText('Challenge')).toBeInTheDocument();
+    expect(screen.getByText('Build your foundation first')).toBeInTheDocument();
     expect(screen.getByText('MY MAP')).toBeInTheDocument();
     expect(screen.getByText('YOUR LEARNING STREAK')).toBeInTheDocument();
     expect(screen.getByText('First check')).toBeInTheDocument();
+  });
+
+  it('does not repeat a due revision in Continue or Fix this first', async () => {
+    const dueDashboard = {
+      ...dashboard,
+      concepts: [{ ...dashboard.concepts[0]!, nextRevisionAt: '2026-01-01T00:00:00.000Z' }],
+      decision: { ...dashboard.decision, conceptId: 'quadratic-equations' },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => dueDashboard }));
+    const { container } = render(<StudentLearningApp user={{ id: 's1', role: 'student', name: 'Asha', language: 'en', board: 'CBSE', classLevel: 10 }} csrf="csrf" onSignOut={() => undefined} language="en"/>);
+
+    await waitFor(() => expect(screen.getByText('Class path complete')).toBeInTheDocument());
+    expect(screen.queryByText('Fix this first')).not.toBeInTheDocument();
+    expect(container.querySelectorAll('.path-card h3')).toHaveLength(3);
+    expect([...container.querySelectorAll('.path-card h3')].filter((heading) => heading.textContent === 'Quadratic equations')).toHaveLength(1);
   });
 });

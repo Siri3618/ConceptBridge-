@@ -1,9 +1,9 @@
 import { api } from './api';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, BookOpen, Check, CircleHelp, Flame, Lightbulb, LockKeyhole, RotateCcw, Sparkles, Target, Trophy, Wifi, WifiOff } from 'lucide-react';
-import { evaluateAdaptiveTest, type Activity as ActivityType } from '@conceptbridge/engine';
+import { evaluateAdaptiveTest, selectNextDiagnosticConcept, selectStudentRecommendations, type Activity as ActivityType } from '@conceptbridge/engine';
 import type { SessionUser } from '@conceptbridge/shared';
-import { fetchAndCacheTopicPack, getDashboard, getTopicPack, pendingAnswerCount, queueAnswer, queueDiagnosticCompletion, saveDashboard, syncPendingAnswers, type OfflineAnswer } from './offline';
+import { fetchAndCacheTopicPack, getDashboard, getTopicPack, pendingAnswerCount, prefetchTopicPacks, queueAnswer, queueDiagnosticCompletion, saveDashboard, selectOfflineChallengeQuestion, syncPendingAnswers, type OfflineAnswer } from './offline';
 import './student.css';
 
 type Mode = 'diagnostic' | 'learn' | 'solve' | 'test' | 'revise' | 'challenge';
@@ -24,7 +24,27 @@ export default function StudentLearningApp({ user, csrf, onSignOut, language }: 
   const [showBaseline, setShowBaseline] = useState(false);
   const prefetchStarted = useRef(false);
   const refresh = useCallback(async () => {
-    try { setError(''); const response = await api('/student/dashboard'); if (!response.ok) throw new Error('Could not load your learning map. Please try again.'); const data = await response.json(); setDashboard(data); void saveDashboard(user.id, data).catch(() => undefined); if (!prefetchStarted.current) { prefetchStarted.current = true; const targets = new Set<string>(data.concepts.filter((item: ConceptItem) => item.classLevel === data.student.classLevel).map((item: ConceptItem) => item.slug)); let changed = true; while (changed) { changed = false; for (const edge of data.edges as Dashboard['edges']) if (targets.has(edge.dependent) && !targets.has(edge.prerequisite)) { targets.add(edge.prerequisite); changed = true; } } void Promise.all([...targets].map((slug) => fetchAndCacheTopicPack(user.id, slug).catch(() => undefined))); } }
+    try {
+      setError('');
+      const response = await api('/student/dashboard');
+      if (!response.ok) throw new Error('Could not load your learning map. Please try again.');
+      const data = await response.json() as Dashboard;
+      setDashboard(data);
+      void saveDashboard(user.id, data).catch(() => undefined);
+      if (!prefetchStarted.current) {
+        prefetchStarted.current = true;
+        const targets = new Set<string>(data.concepts.filter((item) => item.classLevel === data.student.classLevel).map((item) => item.slug));
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const edge of data.edges) if (targets.has(edge.dependent) && !targets.has(edge.prerequisite)) {
+            targets.add(edge.prerequisite);
+            changed = true;
+          }
+        }
+        void prefetchTopicPacks(user.id, [...targets]);
+      }
+    }
     catch (e) { const cached = await getDashboard(user.id).catch(() => undefined); if (cached) setDashboard(cached as Dashboard); else setError(e instanceof Error ? e.message : 'Something went wrong.'); }
     finally { setBusy(false); }
   }, [user.id]);
@@ -33,15 +53,19 @@ export default function StudentLearningApp({ user, csrf, onSignOut, language }: 
   const launch = (conceptId: string, mode: Mode) => setActivity({ conceptId, mode });
   const recommendations = useMemo(() => {
     if (!dashboard) return [];
-    const current = dashboard.concepts.find((item) => item.slug === dashboard.decision.conceptId) ?? dashboard.concepts[0];
-    const revise = dashboard.concepts.find((item) => item.nextRevisionAt && new Date(item.nextRevisionAt).getTime() <= Date.now());
-    const challenge = [...dashboard.concepts].reverse().find((item) => (item.mastery ?? 0) >= 0.92);
-    return [
-      { title: language === 'te' ? 'ముందుగా దీన్ని బలపరచండి' : 'Fix this first', concept: current, mode: dashboard ? modeFromActivity(dashboard.decision.activity) : 'learn' as Mode, reason: dashboard.decision.reason, kind: 'fix' },
-      { title: language === 'te' ? 'కొనసాగించండి' : 'Continue', concept: dashboard.concepts.find((item) => item.slug !== current?.slug && item.classLevel === dashboard.student.classLevel) ?? current, mode: 'solve' as Mode, reason: { en: 'A little practice helps this idea feel familiar.', te: 'కొద్దిగా సాధన ఈ భావనను పరిచయం చేస్తుంది.' }, kind: 'continue' },
-      { title: language === 'te' ? 'పునశ్చరణ' : 'Revise', concept: revise, mode: 'revise' as Mode, reason: { en: 'A short revisit keeps earlier learning fresh.', te: 'చిన్న పునశ్చరణ మునుపటి అభ్యాసాన్ని తాజాగా ఉంచుతుంది.' }, kind: 'revise' },
-      { title: language === 'te' ? 'సవాలు' : 'Challenge', concept: challenge, mode: 'challenge' as Mode, reason: { en: 'You have a strong foundation here. Try a new kind of question.', te: 'ఈ భావనపై మీకు మంచి పట్టు ఉంది. కొత్త ప్రశ్నను ప్రయత్నించండి.' }, kind: 'challenge' },
-    ].filter((item) => item.concept && !(item.kind === 'continue' && item.concept.slug === current?.slug));
+    const selected = selectStudentRecommendations(dashboard.concepts, dashboard.student.classLevel);
+    const current = dashboard.concepts.find((item) => item.slug === dashboard.decision.conceptId);
+    const next = dashboard.concepts.find((item) => item.slug === selected.continueConcept);
+    const revise = dashboard.concepts.find((item) => item.slug === selected.revisionConcept);
+    const challenge = dashboard.concepts.find((item) => item.slug === selected.challengeConcept);
+    const continueMode: Mode = (next?.mastery ?? 0) < 0.4 ? 'learn' : 'solve';
+    const items = [
+      ...(current && current.slug !== next?.slug && current.slug !== revise?.slug && current.slug !== challenge?.slug ? [{ title: language === 'te' ? 'ముందుగా దీన్ని బలపరచండి' : 'Fix this first', concept: current, mode: modeFromActivity(dashboard.decision.activity), reason: dashboard.decision.reason, kind: 'fix' as const }] : []),
+      { title: language === 'te' ? 'కొనసాగించండి' : 'Continue', concept: next, mode: continueMode, reason: { en: next ? 'Learn the next concept whose prerequisites you are ready for.' : 'You have completed the available concepts for your class. Ask your teacher about the next step.', te: next ? 'మీకు అవసరమైన మునుపటి భావనలు సిద్ధంగా ఉన్నాయి. ఇప్పుడు తర్వాతి భావనను నేర్చుకోండి.' : 'మీ తరగతికి అందుబాటులో ఉన్న భావనలను పూర్తి చేశారు. తదుపరి అడుగు కోసం ఉపాధ్యాయుడిని అడగండి.' }, kind: 'continue' as const },
+      ...(revise ? [{ title: language === 'te' ? 'పునశ్చరణ' : 'Revise', concept: revise, mode: 'revise' as Mode, reason: { en: 'A short revisit keeps earlier learning fresh.', te: 'చిన్న పునశ్చరణ మునుపటి అభ్యాసాన్ని తాజాగా ఉంచుతుంది.' }, kind: 'revise' as const }] : []),
+      { title: language === 'te' ? 'సవాలు' : 'Challenge', concept: challenge, mode: challenge ? 'challenge' as Mode : 'revise' as Mode, reason: challenge ? { en: 'Try a harder question on an idea you already know well.', te: 'మీకు బాగా తెలిసిన భావనపై కఠినమైన ప్రశ్నను ప్రయత్నించండి.' } : { en: revise ? 'No new challenge is ready yet. A short revision is available while you build mastery.' : 'A challenge appears after you build a strong foundation on a concept.', te: revise ? 'కొత్త సవాలు ఇంకా సిద్ధంగా లేదు. మీ పట్టు పెంచుకునేలోపు చిన్న పునశ్చరణ అందుబాటులో ఉంది.' : 'ఒక భావనపై మంచి పట్టు సాధించిన తర్వాత సవాలు కనిపిస్తుంది.' }, kind: 'challenge' as const },
+    ];
+    return items;
   }, [dashboard, language]);
   const todayKeys = useMemo(() => recentDays(7), []);
   const ringPct = dashboard ? Math.min(100, Math.round(dashboard.daily.attempts / dashboard.daily.goal * 100)) : 0;
@@ -58,9 +82,9 @@ export default function StudentLearningApp({ user, csrf, onSignOut, language }: 
         <section className="path-panel">
           <div className="section-heading"><div><p className="student-kicker">{language === 'te' ? 'ఈ రోజు' : 'TODAY’S PATH'}</p><h2>{language === 'te' ? 'తర్వాత ఏం నేర్చుకోవాలి?' : 'A helpful next step'}</h2></div><span className="path-spark"><Sparkles size={18}/></span></div>
           {dashboard.decision.rewindPath.length > 1 && <div className="rewind-banner"><RotateCcw size={17}/><div><b>{language === 'te' ? 'మూల భావనకు తిరిగి వెళ్లండి' : 'Let’s strengthen an earlier idea'}</b><span>{dashboard.decision.rewindPath.map((slug) => dashboard.concepts.find((item) => item.slug === slug)?.name ?? slug).join('  ←  ')}</span></div></div>}
-          <div className="path-cards">{recommendations.map((item) => <article className={`path-card path-${item.kind}`} key={item.kind}>
+          <div className="path-cards">{recommendations.map((item) => <article className={`path-card path-${item.kind}${item.concept ? '' : ' path-empty'}`} key={item.kind}>
             <div className="path-card-top"><span>{item.title}</span>{item.kind === 'fix' && dashboard.decision.teacherSet && <em className="teacher-badge">{language === 'te' ? 'ఉపాధ్యాయుడు నిర్ణయించారు' : 'Set by teacher'}</em>}</div>
-            <h3>{item.concept!.name}</h3><p>{txt(item.reason, language)}</p><div className="path-card-bottom"><MasteryRing value={item.concept!.mastery ?? 0} language={language}/><button className="path-action" onClick={() => launch(item.concept!.slug, item.mode)}>{language === 'te' ? activityLabels[item.mode].te : activityLabels[item.mode].en}<ArrowRight size={16}/></button></div>
+            <h3>{item.concept ? (language === 'te' ? item.concept.nameTe ?? item.concept.name : item.concept.name) : item.kind === 'continue' ? (language === 'te' ? 'తరగతి అభ్యాస మార్గం పూర్తైంది' : 'Class path complete') : (language === 'te' ? 'ముందుగా మీ పునాదిని బలపరచండి' : 'Build your foundation first')}</h3><p>{txt(item.reason, language)}</p>{item.concept && <div className="path-card-bottom"><MasteryRing value={item.concept.mastery ?? 0} language={language}/><button className="path-action" onClick={() => launch(item.concept!.slug, item.mode)}>{language === 'te' ? activityLabels[item.mode].te : activityLabels[item.mode].en}<ArrowRight size={16}/></button></div>}
           </article>)}</div>
         </section>
         <section className="map-panel">
@@ -153,12 +177,7 @@ function DiagnosticFlow({ userId, dashboard, csrf, language, onComplete, onSignO
     if (!result) return;
     const answered = path.length;
     if (answered >= 12) { await finish(); return; }
-    let nextConcept = '';
-    const unaskedAtLevel = dashboard.concepts.find((item) => item.classLevel === dashboard.student.classLevel && !path.includes(item.slug));
-    if (!result.correct) nextConcept = dashboard.edges.find((edge) => edge.dependent === conceptId && !path.includes(edge.prerequisite))?.prerequisite ?? '';
-    else if (confidence === 'sure') nextConcept = dashboard.concepts.find((item) => item.classLevel > dashboard.student.classLevel && !path.includes(item.slug))?.slug ?? unaskedAtLevel?.slug ?? '';
-    else nextConcept = unaskedAtLevel?.slug ?? '';
-    if (!nextConcept) nextConcept = dashboard.concepts.find((item) => !path.includes(item.slug))?.slug ?? '';
+    const nextConcept = selectNextDiagnosticConcept(dashboard.concepts, dashboard.edges, dashboard.student.classLevel, conceptId, path, result.correct, confidence ?? 'unsure');
     if (answered >= target && result.correct && confidence === 'sure') { await finish(); return; }
     if (!nextConcept) { if (answered >= target) await finish(); else setError(language === 'te' ? 'తర్వాతి ప్రశ్న అందుబాటులో లేదు.' : 'No more diagnostic questions are available.'); return; }
     setResult(null); setSelected(null); setConfidence(null); setConceptId(nextConcept);
@@ -212,7 +231,10 @@ function ActivityFlow({ userId, concept, mode: initialMode, csrf, language, edge
       if (!cachedPackRequested.current) { cachedPackRequested.current = true; void fetchAndCacheTopicPack(userId, concept.slug).catch(() => undefined); }
     } catch (e) {
       const pack = await getTopicPack(userId, concept.slug).catch(() => undefined);
-      if (pack?.questions.length) { const available = mode === 'test' || mode === 'diagnostic' || mode === 'revise' ? pack.questions.filter((item) => item.difficulty === 3) : pack.questions; const source = available.length ? available : pack.questions; setQuestion(source[packAttempt.current++ % source.length]!); }
+      if (pack?.questions.length) {
+        if (mode === 'challenge') setQuestion(selectOfflineChallengeQuestion(pack.questions, packAttempt.current++) ?? pack.questions[0]!);
+        else { const available = mode === 'test' || mode === 'diagnostic' || mode === 'revise' ? pack.questions.filter((item) => item.difficulty === 3) : pack.questions; const source = available.length ? available : pack.questions; setQuestion(source[packAttempt.current++ % source.length]!); }
+      }
       else setError(e instanceof Error ? e.message : (language === 'te' ? 'ఈ ప్రశ్నను తెరవలేకపోయాం.' : 'Could not load this question.'));
     } finally { setStartedAt(Date.now()); setBusy(false); }
   }, [concept.slug, language, mode, userId]);

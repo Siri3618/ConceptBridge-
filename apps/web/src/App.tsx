@@ -18,11 +18,12 @@ export default function App() {
   const [csrf, setCsrf] = useState('');
   const refreshCsrf = async () => {
     const response = await api('/auth/csrf');
-    const data = await readApiJson<{ csrfToken?: string }>(response);
+    const data = await readApiJson<{ csrfToken?: string; user?: SessionUser | null }>(response);
     if (!response.ok || !data?.csrfToken) throw new Error('The API did not return a CSRF token.');
     setCsrf(data.csrfToken);
+    return data.user ?? null;
   };
-  useEffect(() => { void refreshCsrf().catch(() => setError(t('signInUnavailable'))); void api('/auth/me').then(async (response) => response.ok ? readApiJson<{ user?: SessionUser }>(response) : null).then(data => { if (data?.user) setUser(data.user); }).catch(() => undefined); }, []);
+  useEffect(() => { void refreshCsrf().then(setUser).catch(() => setError(t('signInUnavailable'))); }, []);
   useEffect(() => { const updateDocumentLanguage = (language: string) => { document.documentElement.lang = language === 'te' ? 'te-IN' : 'en-IN'; }; updateDocumentLanguage(i18n.resolvedLanguage ?? i18n.language); i18n.on('languageChanged', updateDocumentLanguage); return () => { i18n.off('languageChanged', updateDocumentLanguage); }; }, [i18n]);
   const toggleLanguage = () => { const next = i18n.language === 'en' ? 'te' : 'en'; localStorage.setItem('cb-language', next); void i18n.changeLanguage(next); };
   const submit = async (event: FormEvent<HTMLFormElement>) => {

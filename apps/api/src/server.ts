@@ -27,7 +27,8 @@ app.use(helmet());
 app.use(cors({ origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173', credentials: true, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'] }));
 app.use(express.json({ limit: '32kb' }));
 const sessionCookieOptions = { httpOnly: true, secure: isProduction, sameSite: isProduction ? 'none' as const : 'lax' as const, ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}) };
-app.use(session({ name: 'conceptbridge.sid', secret: sessionSecret, resave: false, saveUninitialized: false, store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI, collectionName: 'sessions', ttl: 60 * 60 * 8 }), cookie: { ...sessionCookieOptions, maxAge: 8 * 60 * 60 * 1000 } }));
+const sessionStore = process.env.NODE_ENV === 'test' ? undefined : MongoStore.create({ mongoUrl: process.env.MONGODB_URI, collectionName: 'sessions', ttl: 60 * 60 * 8 });
+app.use(session({ name: 'conceptbridge.sid', secret: sessionSecret, resave: false, saveUninitialized: false, ...(sessionStore ? { store: sessionStore } : {}), cookie: { ...sessionCookieOptions, maxAge: 8 * 60 * 60 * 1000 } }));
 app.use((req, res, next) => {
   const identity = req.session.user;
   if (!identity) return next();
@@ -55,7 +56,7 @@ app.get('/api/health', (_req, res) => {
   const ready = mongoose.connection.readyState === 1;
   return res.status(ready ? 200 : 503).json({ status: ready ? 'ok' : 'unavailable', database: ready ? 'connected' : 'disconnected' });
 });
-app.get('/api/auth/csrf', csrfProtection, (req, res) => res.json({ csrfToken: req.csrfToken() }));
+app.get('/api/auth/csrf', csrfProtection, (req, res) => res.json({ csrfToken: req.csrfToken(), user: req.session.user ? publicUser(req.session.user) : null }));
 app.post('/api/auth/teacher', loginLimiter, asyncRoute(async (req, res) => {
   const parsed = teacherLoginSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'VALIDATION_ERROR', 'Enter a valid email and password.');

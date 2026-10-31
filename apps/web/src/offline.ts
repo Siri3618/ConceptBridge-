@@ -29,6 +29,7 @@ export type CachedTopicPack = {
   questions: CachedQuestion[];
   explanations: Array<{ variant: string; text: { en: string; te?: string } }>;
 };
+const TOPIC_PACK_FRESH_MS = 24 * 60 * 60 * 1000;
 interface OfflineDB extends DBSchema {
   dashboards: { key: string; value: { userId: string; savedAt: number; data: unknown } };
   topicPacks: { key: string; value: CachedTopicPack };
@@ -65,6 +66,14 @@ export async function saveTopicPack(userId: string, conceptId: string, pack: Omi
 
 export async function getTopicPack(userId: string, conceptId: string): Promise<CachedTopicPack | undefined> {
   return (await getDB()).get('topicPacks', `${userId}:${conceptId}`);
+}
+
+export function selectOfflineChallengeQuestion(questions: CachedQuestion[], attemptIndex: number): CachedQuestion | undefined {
+  if (!questions.length) return undefined;
+  const closestDistance = Math.min(...questions.map((question) => Math.abs(question.difficulty - 5)));
+  const closestQuestions = questions.filter((question) => Math.abs(question.difficulty - 5) === closestDistance);
+  const index = ((Math.floor(attemptIndex) % closestQuestions.length) + closestQuestions.length) % closestQuestions.length;
+  return closestQuestions[index];
 }
 
 export async function queueAnswer(userId: string, answer: OfflineAnswer, csrf: string): Promise<void> {
@@ -118,11 +127,27 @@ export async function syncPendingAnswers(userId: string): Promise<{ synced: numb
 }
 
 export async function fetchAndCacheTopicPack(userId: string, conceptId: string): Promise<CachedTopicPack> {
+  const cached = await getTopicPack(userId, conceptId).catch(() => undefined);
+  const cachedAge = cached ? Date.now() - cached.savedAt : Number.POSITIVE_INFINITY;
+  if (cached && cachedAge >= 0 && cachedAge < TOPIC_PACK_FRESH_MS) return cached;
   const response = await fetch(apiUrl(`/student/topic-pack/${encodeURIComponent(conceptId)}`), { credentials: 'include' });
   if (!response.ok) throw new Error('This topic could not be saved for offline learning.');
   const pack = await response.json() as Omit<CachedTopicPack, 'key' | 'userId' | 'conceptId' | 'savedAt'>;
   await saveTopicPack(userId, conceptId, pack);
   return { key: `${userId}:${conceptId}`, userId, conceptId, savedAt: Date.now(), ...pack };
+}
+
+/** Warm offline content in a small background queue, skipping packs fetched within the last day. */
+export async function prefetchTopicPacks(userId: string, conceptIds: string[], concurrency = 2): Promise<void> {
+  const uniqueIds = [...new Set(conceptIds)];
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Math.floor(concurrency), uniqueIds.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < uniqueIds.length) {
+      const conceptId = uniqueIds[nextIndex++];
+      if (conceptId) await fetchAndCacheTopicPack(userId, conceptId).catch(() => undefined);
+    }
+  }));
 }
 
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseQuestion } from './question-selection.js';
+import { chooseQuestion, targetQuestionDifficulty } from './question-selection.js';
 
 describe('question selection', () => {
   const questions = Array.from({ length: 6 }, (_, index) => ({ _id: `q${index + 1}`, difficulty: index + 1 }));
@@ -16,5 +16,12 @@ describe('question selection', () => {
 
   it('only repeats after the available bank has been exhausted', () => {
     expect(chooseQuestion(questions.slice(1, 3), 3, ['q2', 'q3'])?._id).toBe('q2');
+  });
+
+  it('reserves the highest question difficulty for challenge mode', () => {
+    expect(targetQuestionDifficulty('challenge', 0)).toBe(5);
+    expect(targetQuestionDifficulty('solve', 0)).toBe(1);
+    expect(targetQuestionDifficulty('solve', 0.8)).toBe(5);
+    expect(targetQuestionDifficulty('diagnostic', 0.9)).toBe(3);
   });
 });

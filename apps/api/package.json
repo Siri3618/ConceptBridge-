@@ -10,6 +10,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "seed": "tsx src/seed.ts",
+    "seed:curriculum:production": "tsx src/seed-curriculum-production.ts",
     "seed:admin": "tsx src/seed-admin.ts",
     "migrate:demo-names": "tsx src/migrate-demo-student-names.ts"
   },

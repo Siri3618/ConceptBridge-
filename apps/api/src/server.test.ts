@@ -21,6 +21,12 @@ afterAll(async () => {
 });
 
 describe('API readiness and role protection', () => {
+  it('returns the CSRF token and current user in one bootstrap response', async () => {
+    const response = await fetch(`${baseUrl}/api/auth/csrf`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ csrfToken: expect.any(String), user: null });
+  });
+
   it('reports the database as unavailable until MongoDB connects', async () => {
     const response = await fetch(`${baseUrl}/api/health`);
     expect(response.status).toBe(503);
