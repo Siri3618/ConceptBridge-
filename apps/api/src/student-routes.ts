@@ -104,16 +104,18 @@ router.get('/question', asyncRoute(async (req, res) => {
   const concept = await Concept.findOne({ slug: query.data.conceptId }).lean();
   if (!concept) return fail(res, 404, 'NOT_FOUND', 'We could not find that concept.');
   if (concept.classLevel > (req.session.user!.classLevel ?? 6)) return fail(res, 403, 'CLASS_LEVEL_MISMATCH', 'This concept is above your current class.');
-  const mastery = await MasteryState.findOne({ studentId: req.session.user!.id, conceptId: concept._id }).lean();
-  const difficulty = targetQuestionDifficulty(query.data.mode, mastery?.mastery ?? 0);
-  const questions = await Question.find({ conceptId: concept._id }).sort({ difficulty: 1, _id: 1 }).lean();
+  const [mastery, questions, seenInActivity] = await Promise.all([
+    MasteryState.findOne({ studentId: req.session.user!.id, conceptId: concept._id }).lean(),
+    Question.find({ conceptId: concept._id }).sort({ difficulty: 1, _id: 1 }).lean(),
+    query.data.activityId
+      ? Attempt.find({ studentId: req.session.user!.id, activityId: query.data.activityId, mode: query.data.mode }).distinct('questionId')
+      : Promise.resolve([]),
+  ]);
   if (!questions.length) return fail(res, 404, 'CONTENT_MISSING', 'Questions for this concept are not available yet.');
-  const seenInActivity = query.data.activityId
-    ? await Attempt.find({ studentId: req.session.user!.id, activityId: query.data.activityId, mode: query.data.mode }).distinct('questionId')
-    : [];
+  const difficulty = targetQuestionDifficulty(query.data.mode, mastery?.mastery ?? 0);
   const seenRecently = await Attempt.find({ studentId: req.session.user!.id, questionId: { $in: questions.map((question) => question._id) }, mode: query.data.mode }).sort({ createdAt: -1 }).limit(4).distinct('questionId');
   const question = chooseQuestion(questions, difficulty, [...seenInActivity, ...seenRecently])!;
-  return res.json({ question: publicQuestion(question), concept: { id: concept.slug, name: concept.name, nameTe: concept.nameTe }, activity: query.data.mode });
+  return res.json({ question: publicQuestion(question), concept: { id: concept.slug, name: concept.name, nameTe: concept.nameTe }, activity: query.data.mode, activityId: query.data.activityId ?? null, studentId: req.session.user!.id });
 }));
 
 router.get('/learn/:conceptId', asyncRoute(async (req, res) => {

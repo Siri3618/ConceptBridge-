@@ -222,12 +222,21 @@ function ActivityFlow({ userId, concept, mode: initialMode, csrf, language, edge
   const [wrongStreak, setWrongStreak] = useState(0);
   const packAttempt = useRef(0);
   const cachedPackRequested = useRef(false);
+  const prefetchKey = `${userId}:${activityId}:${concept.slug}:${mode}`;
+  const prefetchedQuestion = useRef<{ key: string; expiresAt: number; promise: Promise<Question> } | null>(null);
+  useEffect(() => { prefetchedQuestion.current = null; }, [prefetchKey]);
+  const requestQuestion = useCallback(async () => {
+    const response = await api(`/student/question?conceptId=${encodeURIComponent(concept.slug)}&activityId=${activityId}&mode=${mode}`);
+    const data = await response.json();
+    if (!response.ok || !data.question) throw new Error(data.error?.message ?? 'Could not load this question.');
+    if (data.studentId !== userId || data.concept?.id !== concept.slug || data.activity !== mode || data.activityId !== activityId) throw new Error('The fetched question does not match this activity.');
+    return data.question as Question;
+  }, [activityId, concept.slug, mode, userId]);
   const loadQuestion = useCallback(async () => {
     setBusy(true); setError('');
     try {
-      const response = await api(`/student/question?conceptId=${encodeURIComponent(concept.slug)}&activityId=${activityId}&mode=${mode}`);
-      const data = await response.json(); if (!response.ok) throw new Error(data.error?.message ?? 'Could not load this question.');
-      setQuestion(data.question);
+      const next = await requestQuestion();
+      setQuestion(next);
       if (!cachedPackRequested.current) { cachedPackRequested.current = true; void fetchAndCacheTopicPack(userId, concept.slug).catch(() => undefined); }
     } catch (e) {
       const pack = await getTopicPack(userId, concept.slug).catch(() => undefined);
@@ -237,7 +246,31 @@ function ActivityFlow({ userId, concept, mode: initialMode, csrf, language, edge
       }
       else setError(e instanceof Error ? e.message : (language === 'te' ? 'ఈ ప్రశ్నను తెరవలేకపోయాం.' : 'Could not load this question.'));
     } finally { setStartedAt(Date.now()); setBusy(false); }
-  }, [concept.slug, language, mode, userId]);
+  }, [concept.slug, language, mode, requestQuestion, userId]);
+  const prefetchNextQuestion = () => {
+    const entry = { key: prefetchKey, expiresAt: Date.now() + 30_000, promise: requestQuestion() };
+    prefetchedQuestion.current = entry;
+    void entry.promise.catch(() => { if (prefetchedQuestion.current === entry) prefetchedQuestion.current = null; });
+  };
+  const loadNextQuestion = async () => {
+    const entry = prefetchedQuestion.current;
+    if (!entry || entry.key !== prefetchKey || Date.now() >= entry.expiresAt) {
+      prefetchedQuestion.current = null;
+      await loadQuestion();
+      return;
+    }
+    setBusy(true); setError('');
+    try {
+      const next = await entry.promise;
+      if (Date.now() >= entry.expiresAt || prefetchedQuestion.current !== entry) throw new Error('The prefetched question expired.');
+      prefetchedQuestion.current = null;
+      setQuestion(next);
+      if (!cachedPackRequested.current) { cachedPackRequested.current = true; void fetchAndCacheTopicPack(userId, concept.slug).catch(() => undefined); }
+    } catch {
+      if (prefetchedQuestion.current === entry) prefetchedQuestion.current = null;
+      await loadQuestion();
+    } finally { setStartedAt(Date.now()); setBusy(false); }
+  };
   useEffect(() => {
     if (mode === 'learn') {
       void api(`/student/learn/${encodeURIComponent(concept.slug)}`).then((response) => response.json()).then((data) => { setExplanations(data.explanations ?? []); if (!cachedPackRequested.current) { cachedPackRequested.current = true; void fetchAndCacheTopicPack(userId, concept.slug).catch(() => undefined); } }).catch(async () => { const pack = await getTopicPack(userId, concept.slug).catch(() => undefined); if (pack) setExplanations(pack.explanations); else setError(language === 'te' ? 'వివరణను తెరవలేకపోయాం.' : 'Could not load the explanation.'); });
@@ -257,6 +290,11 @@ function ActivityFlow({ userId, concept, mode: initialMode, csrf, language, edge
       if ((mode === 'test' || mode === 'revise') && !data.pending) { const collected = [...testResults, { correct: data.correct }]; setTestResults(collected); setTestDecision(data.testDecision ?? evaluateAdaptiveTest(collected)); }
       if (mode === 'learn' && skipCheck && data.correct) setSkipCorrect((count) => count + 1);
       if (mode === 'learn' && !data.correct) setLearnVariantError(true);
+      const willContinue = mode === 'test' || mode === 'revise' ? !data.testDecision?.stop
+        : mode === 'solve' ? solveCount + 1 < 5
+          : mode === 'learn' ? (skipCheck ? data.correct && skipCorrect < 2 : !data.correct)
+            : true;
+      if (willContinue) prefetchNextQuestion();
     } catch (e) {
       if (!navigator.onLine || e instanceof TypeError) {
         try { await queueAnswer(userId, answer, csrf); if (mode === 'test' || mode === 'revise') setOfflineTestCount((count) => count + 1); setResult({ pending: true, correct: false, feedback: null, answer: '', mastery: concept.mastery ?? 0, confidence: concept.confidence, conceptCheckRequired: false, rewindPath: [], decision: { activity: 'Learn', conceptId: concept.slug, ruleId: 'offline-awaiting-sync', reason: { en: 'This answer will be checked when you reconnect.', te: 'ఆన్‌లైన్‌కు వచ్చిన తర్వాత ఈ సమాధానాన్ని తనిఖీ చేస్తాం.' } }, streak: null }); }
@@ -265,7 +303,7 @@ function ActivityFlow({ userId, concept, mode: initialMode, csrf, language, edge
     }
     finally { setBusy(false); }
   };
-  const nextQuestion = () => { setResult(null); setSelected(null); setConfidence(null); setHintsUsed(0); void loadQuestion(); };
+  const nextQuestion = () => { setResult(null); setSelected(null); setConfidence(null); setHintsUsed(0); void loadNextQuestion(); };
   const conceptName = language === 'te' ? concept.nameTe ?? concept.name : concept.name;
   const variantText = explanations[variant] ? txt(explanations[variant]!.text, language) : (language === 'te' ? `${conceptName} భావనను దశలవారీగా పరిశీలిద్దాం.` : `Let’s make ${concept.name.toLowerCase()} easier, one step at a time.`);
   const masteryProgress = result?.mastery ?? concept.mastery ?? 0;
@@ -282,7 +320,7 @@ function ActivityFlow({ userId, concept, mode: initialMode, csrf, language, edge
         if (skipCorrect >= 2) { setDone(true); void onRefresh(); return; }
         nextQuestion(); return;
       }
-      if (!result?.correct && learnVariantError && variant < 1) { setVariant(1); setLearnVariantError(false); setResult(null); setSelected(null); setConfidence(null); void loadQuestion(); return; }
+      if (!result?.correct && learnVariantError && variant < 1) { setVariant(1); setLearnVariantError(false); setResult(null); setSelected(null); setConfidence(null); void loadNextQuestion(); return; }
       if (result?.correct) { setDone(true); void onRefresh(); } else nextQuestion();
       return;
     }
