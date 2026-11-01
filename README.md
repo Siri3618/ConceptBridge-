@@ -40,7 +40,16 @@ Students sign in with class code `DEMO10`, their roll number, and the correspond
 
 ## Screenshots
 
-Add project screenshots here when available. No screenshot assets are currently included in this README.
+<img width="1823" height="900" alt="Screenshot 2026-11-01 224139" src="https://github.com/user-attachments/assets/463eb615-f4b6-4341-b2ba-84c5912157cd" />
+<img width="1825" height="907" alt="Screenshot 2026-11-01 224505" src="https://github.com/user-attachments/assets/be49d43c-bbfc-4aa1-b8a8-5215551f598f" />
+<img width="1848" height="911" alt="Screenshot 2026-11-01 224552" src="https://github.com/user-attachments/assets/dda5a91c-fdd7-4838-a1be-e6579139f199" />
+<img width="1806" height="907" alt="image" src="https://github.com/user-attachments/assets/5389a6c6-cdc6-4dcb-81ca-b1b84c477edf" />
+<img width="1818" height="907" alt="image" src="https://github.com/user-attachments/assets/6e00f838-53ae-4876-bd7f-292cdc2185c7" />
+<img width="1805" height="890" alt="image" src="https://github.com/user-attachments/assets/cba9ae91-ee1f-4908-8f7b-c4dac63257de" />
+<img width="1808" height="912" alt="image" src="https://github.com/user-attachments/assets/d4d758ef-7753-4c5a-820f-995436a0a154" />
+<img width="1816" height="818" alt="image" src="https://github.com/user-attachments/assets/184e4014-63b1-4e09-8e0b-821283314d3a" />
+
+
 
 ## Technology and architecture
 
