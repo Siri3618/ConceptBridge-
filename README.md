@@ -1,127 +1,154 @@
-# ConceptBridge
+# ConceptBridge — Adaptive Mathematics Learning Platform
 
-Adaptive math learning for Indian classrooms, built as an npm-workspaces monorepo.
+ConceptBridge helps middle- and secondary-school students build mathematical understanding step by step. It uses a curriculum knowledge graph, short diagnostics, question-level practice, and recorded mastery to guide each learner toward a useful next topic. Teachers can review class and student progress and prepare printable practice materials.
 
-## Workspace layout
+## Try the live application
 
-- `apps/web` — React, TypeScript, Vite, Tailwind, and i18next client.
-- `apps/api` — Express, TypeScript, Mongoose, session authentication, and API routes.
-- `packages/shared` — shared Zod schemas and client/server types.
-- `packages/engine` — dependency-free adaptive engine package (implemented in Phase 3).
+- **Website:** [https://conceptbridge-web.onrender.com/](https://conceptbridge-web.onrender.com/)
+- **Backend API:** [https://conceptbridge-api.onrender.com/](https://conceptbridge-api.onrender.com/)
 
-## Requirements and local setup
+### Demo sign-in
 
-Node.js 20+ and npm 10+ are required. Start MongoDB locally or create an Atlas database.
+Use the teacher credentials for the teacher workspace. Student demo sign-in currently supports **Class 10 only**.
 
-```sh
-cp .env.example .env
-# Set MONGODB_URI and replace SESSION_SECRET with a random value of at least 32 characters.
-npm install
-npm run seed
+**Teacher**
+
+- Email: [teacher@conceptbridge.demo](mailto:teacher@conceptbridge.demo)
+- Password: `LearnMath2026!`
+
+**Student demo access — Class 10 only**
+
+| Class | Class code | Rolls | PINs by roll |
+| --- | --- | --- | --- |
+| 10 | `DEMO10` | `01`–`40` | `1001`–`1040` |
+
+Students sign in with class code `DEMO10`, their roll number, and the corresponding PIN; for example, roll `01` uses PIN `1001` and roll `40` uses PIN `1040`.
+
+## What is implemented
+
+- **Student learning journey:** an initial diagnostic, class-layered concept map, baseline/current mastery comparison, daily recommendations, practice activities, revision, adaptive tests, and a learning streak. After an answer, the next question is requested while feedback is shown and used on Continue when it is still valid; failed or expired prefetches fall back to a normal request.
+- **Teacher workspace:** the dashboard selector loads class-specific data for classrooms associated with the signed-in teacher. Dashboard and student detail views include rosters, mastery groups, progress and activity information, misconception patterns, streaks, and alerts. Teachers can save group plans, set learning overrides, acknowledge alerts, create printable worksheets, and review scanned answers. Which classrooms appear depends on the classrooms provisioned in the connected database.
+- **Classes 6–10 curriculum:** the curriculum graph contains 15 concepts across five class levels. The teacher dashboard and curriculum can represent class-specific content across these levels when the corresponding classroom/content records are available. This curriculum/dashboard coverage is separate from student authentication: the current public demo student login documented above is Class 10 only.
+- **Adaptive learning:** the engine updates mastery using correctness, confidence, hints, and response time; tracks estimate confidence separately; decays old estimates toward uncertainty; and schedules revision. Adaptive tests use sequential stopping rules.
+- **Knowledge graph:** prerequisite edges support concept sequencing, prerequisite checks, and root-cause paths when a student struggles.
+- **Recommendations:** Continue chooses an eligible concept based on prerequisite readiness and mastery. Challenge selects a mastered concept for harder practice when one is available. Due revision is surfaced separately; the dashboard explains when a challenge is not yet available.
+- **English and Telugu:** the interface and learning content support English and Telugu, including question text, choices, hints, explanations, feedback, and curriculum names. The language control switches the login and learning workspaces.
+- **Printable worksheets and scan review:** teachers can create English or Telugu worksheets for up to two concepts, download a PDF with a QR code and a separate answer key, then upload or photograph a completed sheet. QR and bubble detection assist review; a teacher selects the student and reviews detected answers before saving them.
+- **Offline and installable web app:** the PWA service worker precaches the application shell and static assets. Student dashboards and topic packs are stored in IndexedDB; topic packs are refreshed after 24 hours. Offline answers are queued for authenticated synchronization when connectivity returns. Authenticated API responses are not cached by the service worker.
+- **Authentication and access control:** teacher/admin sign-in uses email and password; students use class code, roll number, and PIN. Passwords and PINs are Argon2-hashed. Session cookies, CSRF checks, rate limiting, request validation, Helmet, and role-specific API access are implemented.
+- **Administrator workspace:** administrators can create teacher accounts, enable or disable teacher access, and review classroom/student totals and curriculum question/explanation coverage.
+
+## Screenshots
+
+Add project screenshots here when available. No screenshot assets are currently included in this README.
+
+## Technology and architecture
+
+| Area | Implementation |
+| --- | --- |
+| Web client | React 18, TypeScript, Vite, React Router, Tailwind CSS, i18next, Lucide icons |
+| API | Node.js, Express 4, TypeScript, Mongoose, Zod |
+| Database | MongoDB; local development defaults to `mongodb://127.0.0.1:27017/conceptbridge`; production receives its connection URI through Render's `MONGODB_URI` environment setting |
+| Adaptive engine | Dependency-light TypeScript package shared by the API and web client |
+| Shared contracts | Zod request schemas and shared TypeScript types |
+| Worksheets | `@react-pdf/renderer`, QRCode, jsQR, and OpenCV.js |
+| Offline storage | Workbox service worker and IndexedDB via `idb` |
+| Tests | Vitest, Testing Library, and jsdom for web tests |
+
+The repository is an npm-workspaces monorepo:
+
+```text
+apps/
+  api/                 Express API, Mongoose models, routes, seed/migration tools
+  web/                 React application, PWA configuration, styles, tests
+packages/
+  engine/              Curriculum graph, diagnostics, mastery, recommendations
+  shared/              Shared Zod schemas and types
+.github/workflows/     CI workflow
+render.yaml            Render Blueprint for the API service
+vercel.json            Vercel frontend configuration (alternative deployment)
+```
+
+The API owns authentication, authorization, question selection, answer evaluation, attempt history, mastery and streak updates, teacher analytics, and database writes. The engine contains reusable curriculum and decision logic. The web app calls the API and stores only the documented offline dashboard/topic-pack data and queued answers in IndexedDB.
+
+### Adaptive engine notes
+
+The current mastery update uses a learning rate of `0.22` and targets of `1.0` for sure-correct, `0.88` for unsure-correct, `0.68` for guess-correct, and `0` for incorrect answers. Hints reduce the update by 18% each, with a 46% minimum multiplier. Very fast or slow response times reduce influence. A sure-wrong answer requests a concept check and does not change mastery. Confidence is tracked separately, and mastery decays exponentially toward `0.5` with a 90-day half-life.
+
+The diagnostic uses a minimum of 8 and maximum of 12 questions. Adaptive tests use 3–8 questions. Revision is scheduled at 3 and 7 days after mastery confirmation, subject to the engine's revision rules. Streak activity uses the `Asia/Kolkata` day boundary and supports up to two earned freezes. Thresholds and tuning values are centralized in `packages/engine/src/config.ts`.
+
+## Local development
+
+### Requirements
+
+- Node.js 20 or newer
+- npm 10 or newer
+- A local MongoDB Community Server, or a MongoDB Atlas database for development
+
+### Setup (PowerShell)
+
+From the repository root:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit the root `.env` and set `MONGODB_URI` to your **local development database**, `SESSION_SECRET` to a random value of at least 32 characters, and `WEB_ORIGIN` to `http://localhost:5173`. Keep `.env` private and out of Git. The API and scripts load this root `.env` file.
+
+Install dependencies and start the application:
+
+```powershell
+npm ci
 npm run dev
 ```
 
-Keep `.env` in the repository root (`C:\ConceptBridge\.env`). API and seed scripts load that root file even though npm runs them from the `apps/api` workspace.
+- Web app: <http://localhost:5173>
+- API health endpoint: <http://localhost:4000/api/health>
 
-The web app runs at `http://localhost:5173`; Vite proxies `/api` to the API on port 4000.
+Vite proxies `/api` requests to the API on port 4000. The API defaults to the local MongoDB URI shown in the technology table when `MONGODB_URI` is unset in development; production requires explicit database and web-origin configuration.
 
-### Demo sign-in (Phase 1)
+### Seed a local demo database
 
-- Teacher: `teacher@conceptbridge.demo` / `LearnMath2026!`
-- Demo classrooms are available for Classes 6–10 with codes `DEMO06`, `DEMO07`, `DEMO08`, `DEMO09`, and `DEMO10`.
-- Class 10 students: rolls `01` through `40`, PINs `1001` through `1040` respectively.
-- Classes 6–9: rolls `01` through `08`; PINs are `6001`–`6008`, `7001`–`7008`, `8001`–`8008`, and `9001`–`9008` respectively.
+To populate a **disposable local development database** with curriculum, content, demo teacher/classrooms/students, and teacher dashboard sample data, run:
 
-Change these demo credentials before using any shared or public environment.
+```powershell
+npm run seed
+```
 
-### Administrator account
+The full seed is intended for local setup and is not a production-safe migration: parts of it update existing demo/curriculum records. Do not point it at production. The separate production curriculum/demo commands listed below have their own dry-run/apply behavior and should only be used with the intended database after reviewing their output.
 
-The admin console is not seeded with a public demo login. To provision the first admin, set `ADMIN_EMAIL`, `ADMIN_NAME`, and a unique `ADMIN_PASSWORD` of at least 12 characters in the root `.env`, ensure MongoDB is running, and run `npm run seed:admin`. Admins sign in through the teacher sign-in tab, then land on a separate administration screen. It supports creating teachers, enabling/disabling teacher access, and reviewing seeded curriculum coverage. Passwords are stored as Argon2 hashes. The initial teacher password must be shared securely with that teacher.
+## npm commands
 
-## Security configuration
+Run these from the repository root:
 
-Every state-changing auth endpoint validates its request with shared Zod schemas. Express sessions use the Mongo store, `httpOnly` cookies, secure cookies in production, role identity, and CSRF token validation. Login requests are rate-limited, request bodies are size-limited, Helmet is enabled, and credentials are Argon2-hashed. The configured Vercel/Render deployment uses credentialed CORS and `SameSite=None; Secure` cookies; set `WEB_ORIGIN` to the exact frontend origin. Configure `COOKIE_DOMAIN` only when the frontend and API share a registrable domain. See the deployment steps below for the API-origin environment variable and browser cookie limitations.
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the API and web development servers together |
+| `npm run test` | Run tests in workspaces that define a test script |
+| `npm run typecheck` | Type-check workspaces that define a typecheck script |
+| `npm run build` | Build all workspaces that define a build script |
+| `npm run seed` | Run the full local demo seed; use only with a disposable development database |
+| `npm run seed:admin -w @conceptbridge/api` | Provision an administrator using `ADMIN_EMAIL`, `ADMIN_NAME`, and `ADMIN_PASSWORD` from the root `.env` |
+| `npm run seed:curriculum:production` | Dry-run the insert-only curriculum planner by default; use `npm run seed:curriculum:production -- --apply` to insert missing curriculum records |
+| `npm run seed:demo:production -- --dry-run` | Explicitly dry-run the separate Class 10 demo-account planner. This command requires `--dry-run` because the current script applies when called without a mode flag; `npm run seed:demo:production -- --apply` explicitly applies it |
+| `npm run seed:demo:classes:production` | Dry-run the Classes 6–9 migration by default; use `npm run seed:demo:classes:production -- --apply` to apply. It reads its source from `LOCAL_MONGODB_URI` and target from `MONGODB_URI` |
 
-## Commands
+Production curriculum and Class 10 commands connect to the database selected by `MONGODB_URI`. The Classes 6–9 migration uses both `LOCAL_MONGODB_URI` (local source) and `MONGODB_URI` (target). Review each dry-run and source/target configuration before any `--apply`; the full `npm run seed` is not a substitute for these tools.
 
-- `npm run dev` — run web and API concurrently.
-- `npm run test` — run workspace tests.
-- `npm run build` — build all workspaces.
-- `npm run typecheck` — check TypeScript in all workspaces.
-- `npm run seed` — create demo teacher, class, and 40 student profiles.
+## Tests and production build
 
-GitHub Actions runs workspace tests, TypeScript checks, and production builds on pushes and pull requests using `.github/workflows/ci.yml`.
+```powershell
+npm run test
+npm run typecheck
+npm run build
+```
 
-## Deployment
+The web workspace also provides `npm run test -w @conceptbridge/web`; the API provides `npm run test -w @conceptbridge/api`. CI runs `npm ci`, workspace tests, typecheck, and build on pushes and pull requests using `.github/workflows/ci.yml`.
 
-The frontend is deployed to Vercel, the API to Render, and MongoDB to Atlas. The repository includes `vercel.json` and `render.yaml`.
+## Deployment configuration
 
-### MongoDB Atlas
+The live URLs above are hosted on Render. In this repository, `render.yaml` defines the **API web service** (`conceptbridge-api`): it runs `npm ci`, builds `@conceptbridge/api`, starts that workspace, and checks `/api/health`. The manifest declares `MONGODB_URI` and `WEB_ORIGIN` as externally supplied values and generates `SESSION_SECRET`. Set `MONGODB_URI` in Render to the production MongoDB Atlas connection URI; the actual URI and credentials are not stored in the repository and must be inspected in Render's environment settings.
 
-1. Create an Atlas project and database deployment. Create a database user with access only to the ConceptBridge database.
-2. Add the Render service's outbound IP policy, or use Atlas's documented network access setting for the chosen Render plan. Avoid opening database access broadly for a production school deployment.
-3. Copy the Atlas connection string for the Render `MONGODB_URI` environment variable and replace its database username, password, and database name.
+The frontend URL is also on Render, but this checkout does not contain a Render frontend service definition: `render.yaml` defines only the API. `vercel.json` is a separate Vercel frontend configuration that builds `@conceptbridge/web` and publishes `apps/web/dist`; it does not describe the live Render frontend service. Consequently, frontend service build settings and its repository/branch connection must be checked in the Render dashboard. The frontend build uses `VITE_API_BASE_URL` when configured; it is a public build-time API origin, not a secret. Locally, Vite uses its `/api` proxy.
 
-### Render API
-
-1. Create a Render Blueprint from this repository and select `render.yaml`.
-2. Set `MONGODB_URI` in the Render service environment. Render generates `SESSION_SECRET` from the blueprint.
-3. Deploy and wait for `/api/health` to report `status: ok` (it also checks the MongoDB connection).
-4. Run `npm run seed -w @conceptbridge/api` once with the production database URI to create the demo curriculum and demo users. Use a controlled one-off job or local trusted environment; do not expose demo credentials to students. Create real teacher accounts and rotate/remove the demo account before public use.
-
-### Vercel frontend
-
-1. Import this repository into Vercel with the repository root as the project root. The checked-in configuration builds `apps/web` and publishes `apps/web/dist`.
-2. Set `VITE_API_BASE_URL` to the Render API origin, without a trailing slash (for example, `https://conceptbridge-api.onrender.com`). This is a public API origin, not a secret; Vite embeds it at build time.
-3. Set Render's `WEB_ORIGIN` to the exact deployed Vercel origin (scheme and host, no path). Redeploy the API after changing it.
-4. The API uses credentialed CORS and `SameSite=None; Secure` session cookies in production. Keep `COOKIE_DOMAIN` empty for the separate Vercel and Render domains. The browser must allow cross-site cookies for this deployment arrangement.
-
-Use a custom same-site domain or a Vercel `/api` rewrite to a fixed API hostname if the target browser blocks third-party cookies. In that setup, use the frontend origin as the browser-visible API origin and configure Render's CORS origin to match it. Do not set secrets in `VITE_*` variables. Keep Atlas credentials and session secrets in Render's secret environment settings.
-
-### Local development and verification
-
-Copy `.env.example` to `.env`, set a local or Atlas `MONGODB_URI`, set a random `SESSION_SECRET` of at least 32 characters, then run `npm install`, `npm run seed`, and `npm run dev`. Locally, Vite proxies `/api` to port 4000. Before deploying, run `npm run test` and `npm run build`.
-
-## Product implementation phases
-
-The project was implemented in the nine phases in the product brief. The sections below describe the completed feature phases and implementation notes.
-
-## Phase 2: knowledge graph
-
-The pure TypeScript curriculum and graph traversal live in `packages/engine`. The seeded graph has 15 concepts across Classes 6–10, with CBSE and Telangana SCERT chapter labels. Edges point from prerequisite to dependent concept. The seed validates the graph with a topological sort before writing nodes and edges to MongoDB. `getPrerequisites` and `getDependents` traverse breadth-first (nearest concepts first); `findRootCause` selects the most foundational weak prerequisite (mastery below 0.6 by default) and returns the rewind path. The graph package has unit tests for traversal, root-cause selection, order and cycle rejection.
-
-## Phase 3: adaptive engine
-
-All tuning values are centralized in `packages/engine/src/config.ts`. Mastery changes use `delta = 0.22 × (target − mastery) × hintMultiplier × responseMultiplier`; targets are 1.0 for sure-correct, 0.88 for unsure-correct, 0.68 for guess-correct, and 0 for other incorrect responses. A sure-wrong response is flagged for a concept check and receives no mastery change. Each hint reduces the gain by 18% (46% minimum multiplier); unusually fast or slow answers have less influence. Confidence of the estimate is stored separately, and mastery decays exponentially toward 0.5 with a 90-day half-life.
-
-The diagnostic starts at the student’s class level, descends into unprobed prerequisites on an error, moves upward after confident correct answers, and records inferred prerequisite estimates with lower confidence. Next-activity rules and bilingual reasons are listed in `packages/engine/src/rules.ts` and returned with their input audit data. Test stopping uses a sequential probability ratio test with minimum 3 and maximum 8 answers. Mastery review dates are scheduled at 3 and 7 days. Streak helpers use the Asia/Kolkata day boundary, idempotent activity dates, up to two earned freezes, and a weekend grace day. Grouping thresholds are centralized in the same config.
-
-## Phase 4: student learning journey
-
-After `npm run seed`, the student dashboard offers a first-use diagnostic, a class-layered My Map with first-check/current mastery comparison, Today’s Path recommendations with the engine’s reason and rewind path, and a weekly streak strip. Students can open Learn, Solve, Test, Revise, or Challenge activities; answers, hints, confidence, misconceptions, mastery, decision logs, revisions, and eligible streak activity are recorded by student-scoped API routes. The seed creates six question variants and two explanation variants per concept so the student experience has content to use immediately.
-
-## Phase 6: English + Telugu and curriculum mapping
-
-The app language control switches the login, student learning journey, and teacher dashboard between English and Telugu. Student question prompts, answer choices, hints, feedback, misconception text, decision reasons, and explanation variants are stored and served with both `en` and `te` values. Concept records now include Telugu display names; seeded concept updates populate them. Run `npm run seed` after upgrading an existing database so its concept and learning-content records receive the bilingual fields and text.
-
-Classes carry a `board` setting (`CBSE` or `TELANGANA_SCERT`). Student API responses select the corresponding chapter label from each concept’s board map; teacher class views use the selected class’s board and expose it in the classroom header. The UI uses Noto Sans Telugu with system sans-serif fallbacks for Telugu glyphs.
-
-## Phase 7: installable app and offline learning
-
-The Vite PWA plugin uses Workbox to precache the app shell and keep static scripts, styles, and fonts available. The service worker does not cache authenticated API responses. Student dashboards and bilingual topic packs are stored in IndexedDB through `idb`, keyed by student ID; class-level concepts and their prerequisites are prefetched when the dashboard is online. Cached topic packs provide question and explanation content while offline.
-
-Answers submitted without a network connection are queued in IndexedDB with a UUID `clientId`, CSRF token, student ID, and client timestamp. When the browser reconnects, the app sends queued attempts through the normal authenticated API. The API’s unique `(studentId, clientId)` index makes retries idempotent; mastery and streak are computed by the server. Server-accepted client timestamps are limited to the previous seven days and at most five minutes in the future. An offline diagnostic completion is queued after its attempts and is finalized only after those attempts sync. The student workspace shows connection state and pending/synced counts.
-
-Use HTTPS in production for service-worker installation. Browser support for IndexedDB and service workers is required for offline mode; online learning continues in browsers without IndexedDB.
-
-## Phase 8: printable worksheets and scan review
-
-Teachers can create worksheets for one or two selected concepts and an optional class group. Each worksheet has three questions per concept, board/class labels, bilingual English or Telugu content, bubble-style answer circles, a QR code encoding the worksheet, class, and group identifiers, and a separate teacher answer-key page. Noto Sans Telugu is bundled for print/PDF rendering. Worksheets are generated in the browser with `@react-pdf/renderer` and stored as teacher-owned metadata in MongoDB.
-
-The scan tool is a separate lazy-loaded teacher view. Upload or photograph the question page with its QR code visible. jsQR reads the worksheet code, and OpenCV.js estimates filled answer bubbles from the standardized page layout. The teacher selects the student and reviews or corrects every detected mark before saving. Reviewed answers are validated against the worksheet and class on the API; the server records idempotent attempts, updates mastery and decision logs, and retains misconception tags. OpenCV and PDF generation are split into on-demand chunks; Workbox precaches neither tool chunk nor the large OpenCV bundle.
-
-## Phase 9: production hardening
-
-The production config now fails fast when `MONGODB_URI` or `WEB_ORIGIN` is missing, serves a readiness health check that includes MongoDB state, hides the Express signature header, and does not count successful classroom logins against the failed-login throttle. The client uses `VITE_API_BASE_URL` in production while retaining Vite's local `/api` proxy. Keyboard focus and reduced-motion preferences are respected, and the document language follows the English/Telugu switch. Vercel and Render manifests and Atlas deployment steps are included above.
-
-The production build keeps the large worksheet PDF and OpenCV code outside the initial app bundle and Workbox precache. OpenCV remains a roughly 14.5 MB download when a teacher opens worksheet scanning. API tests cover database readiness and unauthenticated role protection; UI journey tests cover teacher sign-in to classroom overview, admin sign-in to administration, and student sign-in to Today’s Path and My Map using API test doubles. A seeded real-browser end-to-end run and Lighthouse audit remain deployment-environment checks: this workspace has no local MongoDB service, and browser-test tooling could not be installed while package-network access was restricted.
+Production configuration uses credentialed CORS and secure cross-site session cookies for separate frontend/API origins. Configure `WEB_ORIGIN` to the exact frontend origin. Browser privacy settings can restrict cross-site cookies; this README does not claim that behavior is resolved in every browser. Keep Atlas credentials and session secrets in Render's environment settings, never in source control or `VITE_*` variables.
