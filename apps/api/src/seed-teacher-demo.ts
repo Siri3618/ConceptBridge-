@@ -59,7 +59,7 @@ export async function seedTeacherDemoData(classId: string, classLevel = 10): Pro
         confidence: index % 5 === 0 ? 'guess' : index % 3 === 0 ? 'unsure' : 'sure',
         ...(correct ? {} : { misconceptionId: wrongOption?.misconceptionId }), mode: attemptIndex % 3 === 0 ? 'test' : 'solve',
         clientTimestamp: new Date(now - ((index + attemptIndex) % 12) * DAY),
-      } }, { upsert: true, new: true });
+      }, $setOnInsert: { provenance: 'demo' } }, { upsert: true, new: true });
     }
 
     if (index < 14 && availableCurriculum.some((concept) => concept.slug === 'integers-sign-rules')) {
@@ -70,7 +70,7 @@ export async function seedTeacherDemoData(classId: string, classLevel = 10): Pro
         studentId: student._id, clientId: `demo-${roll}-negative-times-negative`, activityId: `demo-sign-session-${roll}`,
         questionId: signQuestion._id, correct: false, hintsUsed: 1, timeMs: 52_000, confidence: 'sure', misconceptionId: misconceptionOption.misconceptionId,
         mode: 'diagnostic', clientTimestamp: new Date(now - (index % 6) * DAY),
-      } }, { upsert: true, new: true });
+      }, $setOnInsert: { provenance: 'demo' } }, { upsert: true, new: true });
     }
 
     const activeDays = Math.max(1, Math.min(14, index >= 36 ? 2 : (index * 3) % 15));

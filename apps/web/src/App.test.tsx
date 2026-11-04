@@ -28,12 +28,92 @@ function apiResponse(body: unknown, ok = true) {
 }
 
 describe('sign-in and role journeys', () => {
-  afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
+  afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); window.history.replaceState({}, '', '/'); });
 
   it('shows student and teacher sign-in choices', () => {
     render(<I18nextProvider i18n={i18n}><App /></I18nextProvider>);
     expect(screen.getByRole('tab', { name: /I’m a student/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /I’m a teacher/i })).toBeInTheDocument();
+  });
+
+  it('registers a student with classroom-only credentials and returns to student sign-in', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return apiResponse({ csrfToken: 'csrf-test' });
+      if (url.endsWith('/auth/student/register')) return apiResponse({ student: { id: 's-new', name: 'Asha Rao', rollNo: '01', classCode: 'DEMO10', classLevel: 10, board: 'CBSE' } });
+      throw new Error(`Unexpected API request: ${url} ${String(init?.body ?? '')}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<I18nextProvider i18n={i18n}><App /></I18nextProvider>);
+    await user.click(screen.getByRole('button', { name: /Create student account/i }));
+    await user.type(screen.getByLabelText('Class code'), 'demo10');
+    await user.type(screen.getByLabelText('Full name'), 'Asha Rao');
+    await user.type(screen.getByLabelText('Roll number'), '01');
+    await user.type(screen.getByLabelText('PIN'), '4826');
+    await user.type(screen.getByLabelText('Confirm PIN'), '4826');
+    const registerButtons = screen.getAllByRole('button', { name: /Create student account/i });
+    await user.click(registerButtons.at(-1)!);
+    expect(await screen.findAllByText('Student account created. You can now sign in.')).not.toHaveLength(0);
+    const registration = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/student/register'));
+    expect(JSON.parse(String(registration?.[1]?.body))).toEqual({ classCode: 'DEMO10', name: 'Asha Rao', rollNo: '01', pin: '4826', confirmPin: '4826' });
+    expect(JSON.stringify(registration?.[1]?.body)).not.toMatch(/email|phone|classId|teacherId|pinHash|role/);
+    await user.click(screen.getByRole('button', { name: /Back to student sign in/i }));
+    expect(screen.getByRole('tab', { name: /I’m a student/i })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('shows separate field errors for invalid student registration values without exposing PINs', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return apiResponse({ csrfToken: 'csrf-test' });
+      throw new Error(`Unexpected API request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<I18nextProvider i18n={i18n}><App /></I18nextProvider>);
+    await user.click(screen.getByRole('button', { name: /Create student account/i }));
+    await user.type(screen.getByLabelText('Class code'), '!');
+    await user.type(screen.getByLabelText('Full name'), 'A');
+    await user.type(screen.getByLabelText('Roll number'), '   ');
+    await user.type(screen.getByLabelText('PIN'), '1234');
+    await user.type(screen.getByLabelText('Confirm PIN'), '5678');
+    await user.click(screen.getAllByRole('button', { name: /Create student account/i }).at(-1)!);
+
+    expect(screen.getByText('Enter a code with 4–12 letters, numbers, or hyphens.')).toBeInTheDocument();
+    expect(screen.getByText('Enter a full name between 2 and 100 characters.')).toBeInTheDocument();
+    expect(screen.getByText('Enter a roll number (up to 20 characters).')).toBeInTheDocument();
+    expect(screen.getByText('PIN cannot use all repeated digits or a consecutive sequence.')).toBeInTheDocument();
+    expect(screen.getByText('The PIN entries do not match.')).toBeInTheDocument();
+    expect(screen.queryByText(/1234|5678/)).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/student/register'))).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Change language' }));
+    await user.click(screen.getByRole('button', { name: 'విద్యార్థి ఖాతా సృష్టించండి' }));
+    expect(screen.getByText('4–12 అక్షరాలు, సంఖ్యలు లేదా హైఫన్‌లతో కోడ్ నమోదు చేయండి.')).toBeInTheDocument();
+    expect(screen.getByText('అన్ని అంకెలు ఒకేలా లేదా వరుసగా ఉండే పిన్ వాడకండి.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'భాష మార్చండి' }));
+  });
+
+  it('shows invalid classroom code responses on the classroom-code field', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return apiResponse({ csrfToken: 'csrf-test' });
+      if (url.endsWith('/auth/student/register')) return apiResponse({ error: { code: 'INVALID_CLASS_CODE', message: 'That classroom code was not found.' } }, false);
+      throw new Error(`Unexpected API request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<I18nextProvider i18n={i18n}><App /></I18nextProvider>);
+    await user.click(screen.getByRole('button', { name: /Create student account/i }));
+    await user.type(screen.getByLabelText('Class code'), 'CB0123456789');
+    await user.type(screen.getByLabelText('Full name'), 'Asha Rao');
+    await user.type(screen.getByLabelText('Roll number'), '01');
+    await user.type(screen.getByLabelText('PIN'), '4826');
+    await user.type(screen.getByLabelText('Confirm PIN'), '4826');
+    await user.click(screen.getAllByRole('button', { name: /Create student account/i }).at(-1)!);
+
+    expect(await screen.findByText('Classroom code not found. Check the code with your teacher.')).toBeInTheDocument();
+    expect(document.querySelector('input[name="classCode"]')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.queryByText(/Enter valid classroom and student details/)).not.toBeInTheDocument();
   });
 
   it('logs a teacher in and opens the classroom overview', async () => {
@@ -58,6 +138,47 @@ describe('sign-in and role journeys', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/teacher', expect.objectContaining({ method: 'POST' }));
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/me'))).toBe(false);
     expect(screen.getByText('CLASS HEATMAP')).toBeInTheDocument();
+  });
+
+  it('registers a teacher directly into an authenticated classroom workspace without email verification', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/auth/csrf')) return apiResponse({ csrfToken: 'csrf-test', user: null });
+      if (url.endsWith('/auth/teacher/register')) return apiResponse({ user: { id: 'new-teacher', role: 'teacher', name: 'New Teacher', language: 'en', board: 'CBSE' } });
+      if (url.includes('/teacher/dashboard')) return apiResponse(teacherDashboard);
+      throw new Error(`Unexpected API request: ${url} ${String(init?.body ?? '')}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<I18nextProvider i18n={i18n}><App /></I18nextProvider>);
+    await user.click(screen.getByRole('tab', { name: /I’m a teacher/i }));
+    await user.click(screen.getByRole('button', { name: /Create a teacher account/i }));
+    const passwordInput = document.querySelector<HTMLInputElement>('input[name="password"]')!;
+    const confirmPasswordInput = document.querySelector<HTMLInputElement>('input[name="confirmPassword"]')!;
+    expect(passwordInput).toHaveAttribute('type', 'password');
+    expect(screen.getByText('12–128 characters')).toBeInTheDocument();
+    expect(screen.getByText('At least one lowercase letter (a–z)')).toBeInTheDocument();
+    expect(screen.getByText('At least one uppercase letter (A–Z)')).toBeInTheDocument();
+    expect(screen.getByText('At least one number (0–9)')).toBeInTheDocument();
+    expect(screen.getByText(/At least one symbol/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Show password' }));
+    expect(passwordInput).toHaveAttribute('type', 'text');
+    expect(confirmPasswordInput).toHaveAttribute('type', 'text');
+    await user.click(screen.getByRole('button', { name: 'Hide password' }));
+    expect(passwordInput).toHaveAttribute('type', 'password');
+    await user.click(screen.getByRole('button', { name: 'Change language' }));
+    expect(await screen.findByText('12–128 అక్షరాలు')).toBeInTheDocument();
+    expect(screen.getByText('కనీసం ఒక చిన్న అక్షరం (a–z)')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'భాష మార్చండి' }));
+    await user.type(screen.getByLabelText('Full name'), 'New Teacher');
+    await user.type(screen.getByLabelText('Email address'), 'New.Teacher@Example.com');
+    await user.type(document.querySelector<HTMLInputElement>('input[name="password"]')!, 'StrongTeacher2026!');
+    await user.type(screen.getByLabelText('Confirm password'), 'StrongTeacher2026!');
+    await user.click(screen.getByRole('button', { name: /Create account/i }));
+    expect(await screen.findByRole('heading', { name: 'Class 10 Demo' })).toBeInTheDocument();
+    const registerCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/teacher/register'));
+    expect(JSON.parse(String(registerCall?.[1]?.body))).toEqual({ name: 'New Teacher', email: 'new.teacher@example.com', password: 'StrongTeacher2026!' });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/verification/'))).toBe(false);
   });
 
   it('shows a useful service message when the API returns an empty response', async () => {

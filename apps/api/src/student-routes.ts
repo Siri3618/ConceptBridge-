@@ -145,80 +145,137 @@ router.post('/answer', asyncRoute(async (req, res) => {
   const parsed = studentAnswerSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'VALIDATION_ERROR', 'Check your answer and try again.');
   const studentId = req.session.user!.id;
-  const duplicate = await Attempt.findOne({ studentId, clientId: parsed.data.clientId }).lean();
-  if (duplicate) return res.json({ correct: duplicate.correct, duplicate: true, feedback: duplicate.correct ? { en: 'That answer is already saved.', te: 'ఈ సమాధానం ఇప్పటికే భద్రపరచబడింది.' } : null });
-  const question = await Question.findById(parsed.data.questionId).lean();
-  if (!question) return fail(res, 404, 'NOT_FOUND', 'That question is no longer available.');
-  const selected = question.options[parsed.data.selectedOption];
-  if (!selected) return fail(res, 400, 'VALIDATION_ERROR', 'Choose one of the answer options.');
-  const concept = await Concept.findById(question.conceptId).lean();
-  if (!concept) return fail(res, 404, 'NOT_FOUND', 'We could not find the concept for that question.');
-  const correct = selected.isCorrect === true;
+  const classLevel = req.session.user!.classLevel;
+  if (!Number.isInteger(classLevel) || classLevel! < 6 || classLevel! > 10) return fail(res, 403, 'CLASS_LEVEL_UNAVAILABLE', 'Your class level could not be verified. Please sign in again.');
+
   const now = Date.now();
   const clientTime = parsed.data.clientTimestamp ? Date.parse(parsed.data.clientTimestamp) : now;
   if (!Number.isFinite(clientTime) || clientTime > now + 5 * 60_000 || clientTime < now - 7 * 86_400_000) return fail(res, 400, 'INVALID_ACTIVITY_TIME', 'This activity timestamp is outside the allowed offline sync window.');
   const activityTime = Math.min(now, clientTime);
-  const oldState = await MasteryState.findOne({ studentId, conceptId: concept._id }).lean();
-  const updated = updateMastery(decayMastery(toEngineEstimate(oldState ?? undefined), now), { correct, hintsUsed: parsed.data.hintsUsed, responseTimeMs: parsed.data.timeMs, expectedTimeSec: question.expectedTimeSec ?? 60, selfConfidence: parsed.data.confidence }, now);
-  const feedback = !correct && selected.misconceptionId ? await Misconception.findById(selected.misconceptionId).lean() : null;
-  await Attempt.create({ clientId: parsed.data.clientId, activityId: parsed.data.activityId, studentId, questionId: question._id, correct, hintsUsed: parsed.data.hintsUsed, timeMs: parsed.data.timeMs, confidence: parsed.data.confidence, misconceptionId: selected.misconceptionId, mode: parsed.data.mode, clientTimestamp: new Date(activityTime) });
-  let testDecision: ReturnType<typeof evaluateAdaptiveTest> | undefined;
-  if (parsed.data.mode === 'test' || parsed.data.mode === 'revise') {
-    const sessionAttempts = await Attempt.find({ studentId, activityId: parsed.data.activityId, mode: parsed.data.mode }).sort({ createdAt: 1 }).select('correct').lean();
-    testDecision = evaluateAdaptiveTest(sessionAttempts.map((item) => ({ correct: item.correct })));
-  }
-  const setValues: Record<string, unknown> = { mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, lastUpdated: new Date(now) };
-  if (parsed.data.mode === 'test' && testDecision?.outcome === 'pass') setValues.nextRevisionAt = new Date(scheduleRevisions(now)[0]);
-  if (parsed.data.mode === 'revise' && testDecision?.stop) setValues.nextRevisionAt = testDecision.outcome === 'pass' ? new Date(scheduleRevisions(now)[1]) : null;
-  if (parsed.data.mode === 'diagnostic' && oldState?.baselineMastery === undefined) setValues.baselineMastery = updated.estimate.mastery;
-  await MasteryState.findOneAndUpdate({ studentId, conceptId: concept._id }, { $set: setValues }, { upsert: true, new: true, runValidators: true });
 
-  if (parsed.data.mode === 'diagnostic' && correct && parsed.data.confidence === 'sure') {
-    const { graph } = await getGraph();
-    const prereqSlugs = getPrerequisites(concept.slug, graph);
-    const prereqConcepts = await Concept.find({ slug: { $in: prereqSlugs } }).select('_id slug').lean();
-    for (const prerequisite of prereqConcepts) {
-      await MasteryState.updateOne({ studentId, conceptId: prerequisite._id }, { $setOnInsert: { studentId, conceptId: prerequisite._id, mastery: 0.72, baselineMastery: 0.72, confidence: 0.25, lastUpdated: new Date(now) } }, { upsert: true });
+  const duplicateResponse = (attempt: any) => attempt.answerResult
+    ? { ...attempt.answerResult, duplicate: true }
+    : { correct: attempt.correct, duplicate: true, feedback: attempt.correct ? { en: 'That answer is already saved.', te: 'ఈ సమాధానం ఇప్పటికే భద్రపరచబడింది.' } : null };
+
+  try {
+    const answerResult = await Attempt.db!.transaction(async (session) => {
+      const existingQuery = Attempt.findOne({ studentId, clientId: parsed.data.clientId }).lean();
+      existingQuery.session(session);
+      const existing = await existingQuery;
+      if (existing) return duplicateResponse(existing);
+
+      const questionQuery = Question.findById(parsed.data.questionId).lean();
+      questionQuery.session(session);
+      const question = await questionQuery;
+      if (!question) throw Object.assign(new Error('That question is no longer available.'), { status: 404, code: 'NOT_FOUND' });
+      const conceptQuery = Concept.findById(question.conceptId).lean();
+      conceptQuery.session(session);
+      const concept = await conceptQuery;
+      if (!concept) throw Object.assign(new Error('We could not find the concept for that question.'), { status: 404, code: 'NOT_FOUND' });
+      if (concept.classLevel > classLevel!) throw Object.assign(new Error('This question is above your current class.'), { status: 403, code: 'CLASS_LEVEL_MISMATCH' });
+
+      const selected = question.options[parsed.data.selectedOption];
+      if (!selected) throw Object.assign(new Error('Choose one of the answer options.'), { status: 400, code: 'VALIDATION_ERROR' });
+      const correct = selected.isCorrect === true;
+      const oldStateQuery = MasteryState.findOne({ studentId, conceptId: concept._id }).lean();
+      oldStateQuery.session(session);
+      const oldState = await oldStateQuery;
+      const updated = updateMastery(decayMastery(toEngineEstimate(oldState ?? undefined), now), { correct, hintsUsed: parsed.data.hintsUsed, responseTimeMs: parsed.data.timeMs, expectedTimeSec: question.expectedTimeSec ?? 60, selfConfidence: parsed.data.confidence }, now);
+      const feedbackQuery = !correct && selected.misconceptionId ? Misconception.findById(selected.misconceptionId).lean() : undefined;
+      feedbackQuery?.session(session);
+      const feedback = feedbackQuery ? await feedbackQuery : null;
+      const [attempt] = await Attempt.create([{
+        clientId: parsed.data.clientId, activityId: parsed.data.activityId, studentId, questionId: question._id,
+        correct, hintsUsed: parsed.data.hintsUsed, timeMs: parsed.data.timeMs, confidence: parsed.data.confidence,
+        misconceptionId: selected.misconceptionId, mode: parsed.data.mode, clientTimestamp: new Date(activityTime), provenance: 'real',
+      }], { session });
+
+      let testDecision: ReturnType<typeof evaluateAdaptiveTest> | undefined;
+      if (parsed.data.mode === 'test' || parsed.data.mode === 'revise') {
+        const sessionAttemptsQuery = Attempt.find({ studentId, activityId: parsed.data.activityId, mode: parsed.data.mode }).sort({ createdAt: 1 }).select('correct').lean();
+        sessionAttemptsQuery.session(session);
+        const sessionAttempts = await sessionAttemptsQuery;
+        testDecision = evaluateAdaptiveTest(sessionAttempts.map((item) => ({ correct: item.correct })));
+      }
+      const setValues: Record<string, unknown> = { mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, lastUpdated: new Date(now) };
+      if (parsed.data.mode === 'test' && testDecision?.outcome === 'pass') setValues.nextRevisionAt = new Date(scheduleRevisions(now)[0]);
+      if (parsed.data.mode === 'revise' && testDecision?.stop) setValues.nextRevisionAt = testDecision.outcome === 'pass' ? new Date(scheduleRevisions(now)[1]) : null;
+      if (parsed.data.mode === 'diagnostic' && oldState?.baselineMastery === undefined) setValues.baselineMastery = updated.estimate.mastery;
+      await MasteryState.findOneAndUpdate({ studentId, conceptId: concept._id }, { $set: setValues }, { upsert: true, new: true, runValidators: true, session });
+
+      if (parsed.data.mode === 'diagnostic' && correct && parsed.data.confidence === 'sure') {
+        const { graph } = await getGraph();
+        const prereqSlugs = getPrerequisites(concept.slug, graph);
+        const prereqQuery = Concept.find({ slug: { $in: prereqSlugs } }).select('_id slug').lean();
+        prereqQuery.session(session);
+        const prereqConcepts = await prereqQuery;
+        for (const prerequisite of prereqConcepts) {
+          await MasteryState.updateOne({ studentId, conceptId: prerequisite._id }, { $setOnInsert: { studentId, conceptId: prerequisite._id, mastery: 0.72, baselineMastery: 0.72, confidence: 0.25, lastUpdated: new Date(now) } }, { upsert: true, session });
+        }
+      }
+      if (req.session.user!.classId) await syncProgressSignals(studentId, req.session.user!.classId, [{ conceptId: String(concept._id), previousMastery: oldState?.mastery }], new Date(now), session);
+
+      let rewindPath: string[] = [];
+      let rootCauseId: string | undefined;
+      if (!correct) {
+        const { graph } = await getGraph();
+        const masteryQuery = MasteryState.find({ studentId }).populate('conceptId').lean();
+        masteryQuery.session(session);
+        const masteryDocs = await masteryQuery as any[];
+        const masteryMap = new Map(masteryDocs.filter((item) => item.conceptId?.slug).map((item) => [item.conceptId.slug, item.mastery]));
+        masteryMap.set(concept.slug, updated.estimate.mastery);
+        const result = findRootCause(concept.slug, masteryMap, graph);
+        rewindPath = result.path;
+        rootCauseId = result.rootCauseId;
+      }
+      const decision = decideNextActivity({ conceptId: concept.slug, mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, ...(rootCauseId && rootCauseId !== concept.slug ? { rewindTargetId: rootCauseId } : {}), ...(parsed.data.mode === 'revise' ? { revisionDue: true } : {}) });
+      await DecisionLog.create([{ studentId, conceptId: concept._id, activity: decision.activity, ruleId: decision.ruleId, reason: decision.reason, inputs: decision.inputs }], { session });
+
+      let streakUpdate: unknown;
+      if (parsed.data.mode !== 'diagnostic' && updated.estimate.mastery >= 0.8 && (oldState?.mastery ?? 0) < 0.8) {
+        const existingStreakQuery = StreakState.findOne({ studentId }).lean();
+        existingStreakQuery.session(session);
+        const existingStreak = await existingStreakQuery;
+        const earned = earnStreakFreeze(streakInput(existingStreak));
+        await StreakState.findOneAndUpdate({ studentId }, { $set: { freezes: earned.freezes } }, { upsert: true, new: true, session });
+      }
+      if ((parsed.data.mode === 'learn' && correct) || ((parsed.data.mode === 'test' || parsed.data.mode === 'revise') && testDecision?.stop)) {
+        const streakQuery = StreakState.findOne({ studentId }).lean();
+        streakQuery.session(session);
+        const streak = await streakQuery;
+        const value = recordStreakActivity(streakInput(streak), activityTime);
+        await StreakState.findOneAndUpdate({ studentId }, { $set: value.state }, { upsert: true, new: true, session });
+        streakUpdate = value;
+      } else if (parsed.data.mode === 'solve') {
+        const solveCountQuery = Attempt.countDocuments({ studentId, activityId: parsed.data.activityId, mode: 'solve', createdAt: { $gte: startOfIndiaDay(now) } });
+        solveCountQuery.session(session);
+        if (await solveCountQuery >= 5) {
+          const streakQuery = StreakState.findOne({ studentId }).lean();
+          streakQuery.session(session);
+          const streak = await streakQuery;
+          const value = recordStreakActivity(streakInput(streak), activityTime);
+          await StreakState.findOneAndUpdate({ studentId }, { $set: value.state }, { upsert: true, new: true, session });
+          streakUpdate = value;
+        }
+      }
+      const correctOption = question.options.find((option: any) => option.isCorrect);
+      const response = { correct, feedback: feedback?.text ?? null, answer: correctOption?.text ?? { en: question.answer, te: question.answer }, mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, conceptCheckRequired: updated.conceptCheckRequired, rewindPath, decision, testDecision, streak: streakUpdate };
+      await Attempt.updateOne({ _id: attempt!._id }, { $set: { answerResult: response } }, { session });
+      return response;
+    });
+    return res.json(answerResult);
+  } catch (error) {
+    const duplicateKey = error && typeof error === 'object' && 'code' in error && error.code === 11000;
+    if (duplicateKey) {
+      const duplicate = await Attempt.findOne({ studentId, clientId: parsed.data.clientId }).lean();
+      if (duplicate) return res.json(duplicateResponse(duplicate));
     }
-  }
-  if (req.session.user!.classId) await syncProgressSignals(studentId, req.session.user!.classId, [{ conceptId: String(concept._id), previousMastery: oldState?.mastery }], new Date(now));
-
-  let rewindPath: string[] = [];
-  let rootCauseId: string | undefined;
-  if (!correct) {
-    const { graph, concepts } = await getGraph();
-    const masteryDocs = await MasteryState.find({ studentId }).populate('conceptId').lean() as any[];
-    const masteryMap = new Map(masteryDocs.filter((item) => item.conceptId?.slug).map((item) => [item.conceptId.slug, item.mastery]));
-    masteryMap.set(concept.slug, updated.estimate.mastery);
-    const result = findRootCause(concept.slug, masteryMap, graph);
-    rewindPath = result.path;
-    rootCauseId = result.rootCauseId;
-  }
-  const decision = decideNextActivity({ conceptId: concept.slug, mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, ...(rootCauseId && rootCauseId !== concept.slug ? { rewindTargetId: rootCauseId } : {}), ...(parsed.data.mode === 'revise' ? { revisionDue: true } : {}) });
-  await DecisionLog.create({ studentId, conceptId: concept._id, activity: decision.activity, ruleId: decision.ruleId, reason: decision.reason, inputs: decision.inputs });
-
-  let streakUpdate: unknown;
-  if (parsed.data.mode !== 'diagnostic' && updated.estimate.mastery >= 0.8 && (oldState?.mastery ?? 0) < 0.8) {
-    const existingStreak = await StreakState.findOne({ studentId }).lean();
-    const earned = earnStreakFreeze(streakInput(existingStreak));
-    await StreakState.findOneAndUpdate({ studentId }, { $set: { freezes: earned.freezes } }, { upsert: true, new: true });
-  }
-  if ((parsed.data.mode === 'learn' && correct) || ((parsed.data.mode === 'test' || parsed.data.mode === 'revise') && testDecision?.stop)) {
-    const streak = await StreakState.findOne({ studentId }).lean();
-    const value = recordStreakActivity(streakInput(streak), activityTime);
-    await StreakState.findOneAndUpdate({ studentId }, { $set: value.state }, { upsert: true, new: true });
-    streakUpdate = value;
-  } else if (parsed.data.mode === 'solve') {
-    const solveCount = await Attempt.countDocuments({ studentId, activityId: parsed.data.activityId, mode: 'solve', createdAt: { $gte: startOfIndiaDay(now) } });
-    if (solveCount >= 5) {
-      const streak = await StreakState.findOne({ studentId }).lean();
-      const value = recordStreakActivity(streakInput(streak), activityTime);
-      await StreakState.findOneAndUpdate({ studentId }, { $set: value.state }, { upsert: true, new: true });
-      streakUpdate = value;
+    if (error && typeof error === 'object' && 'status' in error && typeof error.status === 'number') {
+      const typed = error as { status: number; code?: string; message?: string };
+      return fail(res, typed.status, typed.code ?? 'REQUEST_FAILED', typed.message ?? 'The answer could not be processed.');
     }
+    throw error;
   }
-  const correctOption = question.options.find((option: any) => option.isCorrect);
-  return res.json({ correct, feedback: feedback?.text ?? null, answer: correctOption?.text ?? { en: question.answer, te: question.answer }, mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, conceptCheckRequired: updated.conceptCheckRequired, rewindPath, decision, testDecision, streak: streakUpdate });
 }));
 
 router.post('/diagnostic/complete', asyncRoute(async (req, res) => {

@@ -36,6 +36,7 @@ Students sign in with class code `DEMO10`, their roll number, and the correspond
 - **Printable worksheets and scan review:** teachers can create English or Telugu worksheets for up to two concepts, download a PDF with a QR code and a separate answer key, then upload or photograph a completed sheet. QR and bubble detection assist review; a teacher selects the student and reviews detected answers before saving them.
 - **Offline and installable web app:** the PWA service worker precaches the application shell and static assets. Student dashboards and topic packs are stored in IndexedDB; topic packs are refreshed after 24 hours. Offline answers are queued for authenticated synchronization when connectivity returns. Authenticated API responses are not cached by the service worker.
 - **Authentication and access control:** teacher/admin sign-in uses email and password; students use class code, roll number, and PIN. Passwords and PINs are Argon2-hashed. Session cookies, CSRF checks, rate limiting, request validation, Helmet, and role-specific API access are implemented.
+- **Teacher registration:** teachers register with a name, email, and strong password. The API hashes the password and starts a secure teacher session immediately; email verification is not required.
 - **Administrator workspace:** administrators can create teacher accounts, enable or disable teacher access, and review classroom/student totals and curriculum question/explanation coverage.
 
 ## Screenshots

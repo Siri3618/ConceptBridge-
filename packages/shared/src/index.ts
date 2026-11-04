@@ -5,16 +5,45 @@ export const languageSchema = z.enum(['en', 'te']).default('en');
 export const boardSchema = z.enum(['CBSE', 'TELANGANA_SCERT']).default('CBSE');
 
 export const teacherLoginSchema = z.object({
-  email: z.string().trim().email().max(254),
+  email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
   password: z.string().min(8).max(128),
 });
+const classroomCodeSchema = z.string().trim().toUpperCase().regex(/^[A-Z0-9-]{4,12}$/);
 export const studentLoginSchema = z.object({
-  classCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9-]{4,12}$/),
+  classCode: classroomCodeSchema,
   rollNo: z.string().trim().min(1).max(20),
   pin: z.string().regex(/^\d{4,8}$/),
 });
-export const registerTeacherSchema = teacherLoginSchema.extend({
+const studentPinSchema = z.string().regex(/^\d{4,8}$/).refine((pin) => {
+  const digits = [...pin].map(Number);
+  const repeated = digits.every((digit) => digit === digits[0]);
+  const ascending = digits.slice(1).every((digit, index) => digit === (digits[index]! + 1) % 10);
+  const descending = digits.slice(1).every((digit, index) => digit === (digits[index]! + 9) % 10);
+  return !repeated && !ascending && !descending;
+}, 'Choose a PIN that is not repeated or sequential.');
+export const studentRegistrationSchema = z.object({
+  classCode: classroomCodeSchema,
   name: z.string().trim().min(2).max(100),
+  rollNo: z.string().trim().min(1).max(20),
+  pin: studentPinSchema,
+  confirmPin: z.string().max(8),
+}).superRefine((data, context) => {
+  if (data.pin !== data.confirmPin) context.addIssue({ code: 'custom', path: ['confirmPin'], message: 'PIN confirmation does not match.' });
+});
+const strongTeacherPasswordSchema = z.string().min(12).max(128)
+  .regex(/[a-z]/, 'Include a lowercase letter.')
+  .regex(/[A-Z]/, 'Include an uppercase letter.')
+  .regex(/[0-9]/, 'Include a number.')
+  .regex(/[^A-Za-z0-9]/, 'Include a symbol.');
+export const registerTeacherSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+  password: strongTeacherPasswordSchema,
+});
+export const createClassroomSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  classLevel: z.coerce.number().int().min(6).max(10),
+  board: z.enum(['CBSE', 'TELANGANA_SCERT']).default('CBSE'),
 });
 export const adminCreateTeacherSchema = z.object({
   name: z.string().trim().min(2).max(100),

@@ -1,10 +1,13 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { createClassroomSchema } from '@conceptbridge/shared';
 import { decideNextActivity, decayMastery, findRootCause, groupByMastery, updateMastery, type KnowledgeGraph } from '@conceptbridge/engine';
 import { Alert, Attempt, Classroom, Concept, DecisionLog, MasteryState, PrerequisiteEdge, Question, StreakState, TeacherGroupPlan, TeacherOverride, User, Worksheet } from './models.js';
 import { syncProgressSignals } from './progress-signals.js';
 import { getCurriculumSnapshot } from './curriculum-cache.js';
 import { resolveTeacherStudentClassLevel } from './teacher-class-level.js';
+import { classifyAttemptProvenance, countAttemptProvenance } from './attempt-provenance.js';
 
 const router = Router();
 const fail = (res: Response, status: number, code: string, message: string) => res.status(status).json({ error: { code, message } });
@@ -26,6 +29,67 @@ function planTemplate(group: string) {
   if (group === 'needs-basics') return '10-minute teacher-led prerequisite mini-lesson: model one worked example, then solve two together.';
   return '10-minute partner practice: solve three questions on the most-missed step and compare reasoning.';
 }
+
+function generateClassroomCode() {
+  // `CB` + 40 random bits gives a short code accepted by the existing student login schema.
+  return `CB${randomBytes(5).toString('hex').toUpperCase()}`;
+}
+
+function duplicateKey(error: unknown) {
+  return error && typeof error === 'object' && 'code' in error && error.code === 11000 ? error as { keyPattern?: Record<string, number>; keyValue?: Record<string, unknown> } : null;
+}
+
+router.post('/classrooms', asyncRoute(async (req, res) => {
+  const identity = req.session.user;
+  if (identity?.role !== 'teacher') return fail(res, identity ? 403 : 401, identity ? 'FORBIDDEN' : 'UNAUTHENTICATED', identity ? 'Only teachers can create classrooms.' : 'Please sign in.');
+  const parsed = createClassroomSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'VALIDATION_ERROR', 'Enter a classroom name, class level from 6 to 10, and a supported board.');
+
+  const teacher = await User.findOne({ _id: identity.id, role: 'teacher', isActive: true }).select('_id').lean();
+  if (!teacher) return fail(res, 401, 'UNAUTHENTICATED', 'Please sign in again.');
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateClassroomCode();
+    try {
+      const classroom = await Classroom.create({ ...parsed.data, code, teacherId: identity.id });
+      return res.status(201).json({ classroom: { id: String(classroom._id), name: classroom.name, code: classroom.code, classLevel: classroom.classLevel, board: classroom.board } });
+    } catch (error) {
+      const duplicate = duplicateKey(error);
+      if (!duplicate) throw error;
+      if (duplicate.keyPattern?.code || duplicate.keyValue?.code !== undefined) {
+        if (attempt < 4) continue;
+        return fail(res, 503, 'CLASS_CODE_UNAVAILABLE', 'Could not generate a classroom code. Please try again.');
+      }
+      return fail(res, 409, 'CLASSROOM_CONFLICT', 'A classroom with this name already exists. Choose a different name.');
+    }
+  }
+  return fail(res, 503, 'CLASS_CODE_UNAVAILABLE', 'Could not generate a classroom code. Please try again.');
+}));
+
+router.delete('/classrooms/:classId/students/:studentId', asyncRoute(async (req, res) => {
+  const identity = req.session.user;
+  if (identity?.role !== 'teacher') return fail(res, identity ? 403 : 401, identity ? 'FORBIDDEN' : 'UNAUTHENTICATED', identity ? 'Only teachers can remove students.' : 'Please sign in.');
+  const classId = typeof req.params.classId === 'string' ? req.params.classId : '';
+  const studentId = typeof req.params.studentId === 'string' ? req.params.studentId : '';
+  if (!/^[a-f\d]{24}$/i.test(classId) || !/^[a-f\d]{24}$/i.test(studentId)) return fail(res, 400, 'VALIDATION_ERROR', 'Check the classroom and student, then try again.');
+
+  const teacher = await User.findOne({ _id: identity.id, role: 'teacher', isActive: true }).select('_id').lean();
+  if (!teacher) return fail(res, 401, 'UNAUTHENTICATED', 'Please sign in again.');
+
+  const classroom = await ownedClass(req, classId);
+  if (!classroom) return fail(res, 403, 'FORBIDDEN', 'This class is not assigned to your account.');
+
+  const studentFilter = { _id: studentId, classId: classroom._id, role: 'student' };
+  const student = await User.findOne(studentFilter).select('isActive').lean();
+  if (!student) return fail(res, 404, 'STUDENT_NOT_FOUND', 'That student is not enrolled in this class.');
+  if (!student.isActive) return res.json({ removed: true, alreadyInactive: true });
+
+  const result = await User.updateOne({ ...studentFilter, isActive: true }, { $set: { isActive: false } });
+  // A concurrent removal is equivalent to this request succeeding. No learning
+  // records are changed; only the account's existing access flag is updated.
+  if (result.matchedCount === 0) return res.json({ removed: true, alreadyInactive: true });
+  return res.json({ removed: true, alreadyInactive: result.modifiedCount === 0 });
+}));
 
 router.get('/dashboard', asyncRoute(async (req, res) => {
   const classes = await Classroom.find(req.session.user!.role === 'admin' ? {} : { teacherId: req.session.user!.id }).sort({ classLevel: 1, name: 1 }).lean();
@@ -61,7 +125,7 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
   const conceptSlugById = new Map(concepts.map((concept) => [String(concept._id), concept.slug]));
   const [streaks, misconceptionAttempts] = await Promise.all([
     StreakState.find({ studentId: { $in: classStudentIds } }).lean(),
-    Attempt.find({ studentId: { $in: classStudentIds }, misconceptionId: { $exists: true } }).populate('misconceptionId').populate({ path: 'questionId', populate: { path: 'conceptId' } }).lean(),
+    Attempt.find({ studentId: { $in: classStudentIds } }).populate('misconceptionId').populate({ path: 'questionId', populate: { path: 'conceptId' } }).lean(),
   ]);
   const streakMap = new Map((streaks as any[]).map((item) => [String(item.studentId), item.current]));
   for (const student of dashboardStudents) student.streak = streakMap.get(student.id) ?? 0;
@@ -72,17 +136,20 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
     const saved = savedPlans.get(group);
     return { group, count: members.length, studentIds: members.map((student) => student.id), activity: saved?.activity ?? planTemplate(group), approved: saved?.approved ?? false, updatedAt: (saved as any)?.updatedAt ?? null };
   });
-  const misconceptionMap = new Map<string, { id: string; text: any; conceptId: string; conceptName: string; students: Set<string>; count: number }>();
+  const activitySources = countAttemptProvenance(misconceptionAttempts as any[]);
+  const misconceptionMap = new Map<string, { id: string; text: any; conceptId: string; conceptName: string; students: Set<string>; count: number; activitySources: { real: number; demo: number; unclassified: number } }>();
   for (const attempt of misconceptionAttempts as any[]) {
+    const provenance = classifyAttemptProvenance(attempt.provenance);
     const misconception = attempt.misconceptionId;
     if (!misconception) continue;
     const key = String(misconception._id);
-    const row = misconceptionMap.get(key) ?? { id: key, text: misconception.text, conceptId: misconception.conceptId?.slug ?? attempt.questionId?.conceptId?.slug ?? '', conceptName: attempt.questionId?.conceptId?.name ?? 'Maths concept', students: new Set<string>(), count: 0 };
+    const row = misconceptionMap.get(key) ?? { id: key, text: misconception.text, conceptId: misconception.conceptId?.slug ?? attempt.questionId?.conceptId?.slug ?? '', conceptName: attempt.questionId?.conceptId?.name ?? 'Maths concept', students: new Set<string>(), count: 0, activitySources: { real: 0, demo: 0, unclassified: 0 } };
     row.count++;
+    row.activitySources[provenance]++;
     row.students.add(String(attempt.studentId));
     misconceptionMap.set(key, row);
   }
-  const misconceptionRows = [...misconceptionMap.values()].map((row) => ({ id: row.id, text: row.text, conceptId: row.conceptId, conceptName: row.conceptName, studentCount: row.students.size, attemptCount: row.count })).sort((a, b) => b.studentCount - a.studentCount);
+  const misconceptionRows = [...misconceptionMap.values()].map((row) => ({ id: row.id, text: row.text, conceptId: row.conceptId, conceptName: row.conceptName, studentCount: row.students.size, attemptCount: row.count, activitySources: row.activitySources })).sort((a, b) => b.studentCount - a.studentCount);
   for (const row of misconceptionRows) {
     const studentId = [...(misconceptionMap.get(row.id)?.students ?? [])][0];
     const sampleMap = studentId ? statesByStudent.get(studentId) ?? new Map<string, number>() : new Map<string, number>();
@@ -97,6 +164,8 @@ router.get('/dashboard', asyncRoute(async (req, res) => {
     edges: edges.map((edge) => ({ prerequisiteId: String(edge.prerequisiteId), dependentId: String(edge.dependentId) })),
     students: dashboardStudents,
     groups,
+    activitySources,
+    masteryAttribution: 'cumulative-not-source-attributed',
     misconceptions: misconceptionRows,
     alerts: apiAlerts,
   });
@@ -125,7 +194,7 @@ router.get('/students/:studentId', asyncRoute(async (req, res) => {
     concepts: concepts.map((concept) => { const state = stateBySlug.get(concept.slug); return { id: String(concept._id), slug: concept.slug, name: concept.name, nameTe: concept.nameTe, classLevel: concept.classLevel, mastery: state?.mastery ?? null, baselineMastery: state?.baselineMastery ?? null, confidence: state?.confidence ?? 0, nextRevisionAt: state?.nextRevisionAt ?? null }; }),
     rewind: rewind ? { ...rewind, names: rewind.path.map((slug) => concepts.find((item) => item.slug === slug)?.name ?? slug) } : null,
     misconceptions: (attempts as any[]).filter((item) => item.misconceptionId).map((item) => ({ text: item.misconceptionId.text, concept: item.questionId?.conceptId?.name, date: item.createdAt })),
-    attempts: (attempts as any[]).map((item) => ({ id: String(item._id), concept: item.questionId?.conceptId?.name ?? 'Maths', question: item.questionId?.text, correct: item.correct, confidence: item.confidence, hintsUsed: item.hintsUsed, misconception: item.misconceptionId?.text ?? null, mode: item.mode, date: item.createdAt })),
+    attempts: (attempts as any[]).map((item) => ({ id: String(item._id), concept: item.questionId?.conceptId?.name ?? 'Maths', question: item.questionId?.text, correct: item.correct, confidence: item.confidence, hintsUsed: item.hintsUsed, misconception: item.misconceptionId?.text ?? null, mode: item.mode, provenance: item.provenance === 'real' || item.provenance === 'demo' ? item.provenance : 'unclassified', date: item.createdAt })),
     decisions,
     streak: streak ?? { current: 0, longest: 0, freezes: 0, history: [] },
   });
@@ -211,7 +280,7 @@ router.post('/worksheets/:worksheetId/reviewed-answers', asyncRoute(async (req, 
     if (!previousMasteryByConcept.has(String(concept._id))) previousMasteryByConcept.set(String(concept._id), old?.mastery);
     const expectedTimeSec = question.expectedTimeSec ?? 60;
     const updated = updateMastery(decayMastery({ mastery: old?.mastery ?? 0, confidence: old?.confidence ?? 0, ...(old?.lastUpdated ? { lastUpdated: old.lastUpdated.getTime() } : {}) }, now), { correct, hintsUsed: 0, responseTimeMs: expectedTimeSec * 1000, expectedTimeSec, selfConfidence: 'unsure' }, now);
-    await Attempt.create({ clientId: answer.clientId, activityId: String(worksheet._id), studentId: student._id, questionId: question._id, correct, hintsUsed: 0, timeMs: expectedTimeSec * 1000, confidence: 'unsure', ...(selected.misconceptionId ? { misconceptionId: selected.misconceptionId } : {}), mode: 'worksheet-scan', clientTimestamp: new Date(now) });
+    await Attempt.create({ clientId: answer.clientId, activityId: String(worksheet._id), studentId: student._id, questionId: question._id, correct, hintsUsed: 0, timeMs: expectedTimeSec * 1000, confidence: 'unsure', ...(selected.misconceptionId ? { misconceptionId: selected.misconceptionId } : {}), mode: 'worksheet-scan', clientTimestamp: new Date(now), provenance: 'real' });
     await MasteryState.findOneAndUpdate({ studentId: student._id, conceptId: concept._id }, { $set: { mastery: updated.estimate.mastery, confidence: updated.estimate.confidence, lastUpdated: new Date(now), ...(old?.baselineMastery === undefined ? { baselineMastery: updated.estimate.mastery } : {}) } }, { upsert: true, new: true, runValidators: true });
     const decision = decideNextActivity({ conceptId: concept.slug, mastery: updated.estimate.mastery, confidence: updated.estimate.confidence });
     await DecisionLog.create({ studentId: student._id, conceptId: concept._id, activity: decision.activity, ruleId: decision.ruleId, reason: decision.reason, inputs: { ...decision.inputs, source: 'worksheet-scan', worksheetId: String(worksheet._id) } });

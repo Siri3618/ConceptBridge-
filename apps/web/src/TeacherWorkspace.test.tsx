@@ -14,18 +14,23 @@ const dashboard = {
   ],
   students: [{ id: 's1', name: 'Student 01', rollNo: '01', classLevel: 10, language: 'en', lastActiveAt: new Date().toISOString(), group: 'on-track', mastery: { 'integers-sign-rules': 0.5 }, overallMastery: 0.5, weakConcepts: 0, streak: 3, values: [0.5] }],
   groups: [{ group: 'on-track', count: 1, studentIds: ['s1'], activity: '10-minute partner practice', approved: false, updatedAt: null }],
-  misconceptions: [{ id: 'm1', text: { en: 'A negative times a negative is positive.', te: 'ఋణాన్ని ఋణంతో గుణిస్తే ధనం.' }, conceptId: 'integers-sign-rules', conceptName: 'Integers & sign rules', likelyRootCause: 'integers-sign-rules', studentCount: 14, attemptCount: 14 }],
+  activitySources: { real: 3, demo: 2, unclassified: 1 },
+  masteryAttribution: 'cumulative-not-source-attributed',
+  misconceptions: [{ id: 'm1', text: { en: 'A negative times a negative is positive.', te: 'ఋణాన్ని ఋణంతో గుణిస్తే ధనం.' }, conceptId: 'integers-sign-rules', conceptName: 'Integers & sign rules', likelyRootCause: 'integers-sign-rules', studentCount: 14, attemptCount: 14, activitySources: { real: 8, demo: 4, unclassified: 2 } }],
   alerts: [{ id: 'a1', studentId: 's1', studentName: 'Student 01', type: 'inactivity', message: { en: 'A friendly check-in may help.', te: 'స్నేహపూర్వకంగా అడిగి చూడండి.' } }],
 };
 
 describe('teacher classroom dashboard', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
   it('shows class heatmap, misconception counts, group plans, and alerts', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => dashboard }));
     render(<TeacherWorkspace user={{ id: 't1', role: 'teacher', name: 'Demo Teacher', language: 'en', board: 'CBSE' }} csrf="csrf" onSignOut={() => undefined} language="en"/>);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Class 10 Demo' })).toBeInTheDocument());
     expect(screen.getByText('CLASS HEATMAP')).toBeInTheDocument();
     expect(screen.getByText('14 of 1')).toBeInTheDocument();
+    expect(screen.getByText(/Attempts — real: 3 · demo: 2 · unclassified: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Real \/ demo \/ unclassified attempts: 8 \/ 4 \/ 2/)).toBeInTheDocument();
+    expect(screen.getByText(/Mastery is cumulative and is not attributed by source/)).toBeInTheDocument();
     expect(screen.getByText('Tomorrow’s 10-minute activity')).toBeInTheDocument();
     expect(screen.getByText('ALERT INBOX')).toBeInTheDocument();
     expect(screen.getByText('Save group instruction')).toBeInTheDocument();
@@ -85,5 +90,72 @@ describe('teacher classroom dashboard', () => {
     expect(selector).toHaveValue('c10');
     expect(document.querySelector('.teacher-metric b')?.textContent).toBe('40');
     expect(screen.getByText('14 of 40')).toBeInTheDocument();
+  });
+
+  it('creates a classroom, selects its dashboard, and copies the persistent code', async () => {
+    const emptyDashboard = { ...dashboard, classes: [], classroom: null, students: [], groups: [], misconceptions: [], alerts: [] };
+    const createdDashboard = {
+      ...dashboard,
+      classes: [...dashboard.classes, { id: 'new-class', name: 'Class 8 Evening', classLevel: 8, board: 'CBSE' }],
+      classroom: { id: 'new-class', name: 'Class 8 Evening', code: 'CB0123456789', classLevel: 8, board: 'CBSE' },
+    };
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/teacher/classrooms' && init?.method === 'POST') return Promise.resolve({ ok: true, status: 201, json: async () => ({ classroom: createdDashboard.classroom }) });
+      if (url === '/api/teacher/dashboard?classId=new-class') return Promise.resolve({ ok: true, json: async () => createdDashboard });
+      return Promise.resolve({ ok: true, json: async () => emptyDashboard });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<TeacherWorkspace user={{ id: 't1', role: 'teacher', name: 'Demo Teacher', language: 'en', board: 'CBSE' }} csrf="csrf-token" onSignOut={() => undefined} language="en"/>);
+    await screen.findByRole('heading', { name: 'Create your first classroom' });
+    fireEvent.click(screen.getByRole('button', { name: /Create Classroom/i }));
+    fireEvent.change(screen.getByLabelText('Classroom name'), { target: { value: 'Class 8 Evening' } });
+    fireEvent.change(screen.getByLabelText('Class level'), { target: { value: '8' } });
+    const createButtons = screen.getAllByRole('button', { name: /Create Classroom/i });
+    fireEvent.click(createButtons.at(-1)!);
+    await screen.findByRole('heading', { name: 'Class 8 Evening' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/teacher/classrooms', expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }) }));
+    expect(JSON.parse(String(fetchMock.mock.calls.find(([url]) => String(url) === '/api/teacher/classrooms')?.[1]?.body))).toEqual({ name: 'Class 8 Evening', classLevel: 8, board: 'CBSE' });
+    expect(screen.getByRole('combobox', { name: 'Class' })).toHaveValue('new-class');
+    expect(screen.getByText('CB0123456789')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Copy code/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('CB0123456789'));
+    expect(screen.getByText('Classroom code copied.')).toBeInTheDocument();
+  });
+
+  it('confirms removal, explains that history is preserved, then refreshes the roster', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const refreshed = { ...dashboard, students: [] };
+    let removed = false;
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'DELETE') { removed = true; return Promise.resolve({ ok: true, json: async () => ({ removed: true, alreadyInactive: false }) }); }
+      return Promise.resolve({ ok: true, json: async () => removed ? refreshed : dashboard });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<TeacherWorkspace user={{ id: 't1', role: 'teacher', name: 'Demo Teacher', language: 'en', board: 'CBSE' }} csrf="csrf-token" onSignOut={() => undefined} language="en"/>);
+    await screen.findByRole('heading', { name: 'Class 10 Demo' });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Student 01' }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('learning history will be preserved'));
+    await screen.findByText('Student 01 was removed. Their learning history is preserved.');
+    expect(fetchMock).toHaveBeenCalledWith('/api/teacher/classrooms/c1/students/s1', expect.objectContaining({ method: 'DELETE', headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }) }));
+    await waitFor(() => expect(document.querySelectorAll('.heatmap tbody tr')).toHaveLength(0));
+  });
+
+  it('does not send a removal request when confirmation is cancelled and shows server errors', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => Promise.resolve(init?.method === 'DELETE'
+      ? { ok: false, status: 403, json: async () => ({ error: { message: 'This class is not assigned to your account.' } }) }
+      : { ok: true, json: async () => dashboard }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<TeacherWorkspace user={{ id: 't1', role: 'teacher', name: 'Demo Teacher', language: 'en', board: 'CBSE' }} csrf="csrf-token" onSignOut={() => undefined} language="en"/>);
+    await screen.findByRole('heading', { name: 'Class 10 Demo' });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Student 01' }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/teacher/classrooms/c1/students/s1', expect.anything());
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Student 01' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('This class is not assigned to your account.');
+    expect(fetchMock).toHaveBeenCalledWith('/api/teacher/classrooms/c1/students/s1', expect.objectContaining({ method: 'DELETE' }));
   });
 });
